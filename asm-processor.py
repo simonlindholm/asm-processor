@@ -173,8 +173,6 @@ class Section:
     """
 
     def __init__(self, header, data, index):
-        self.index = index
-        self.header = header
         self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize = struct.unpack('>IIIIIIIIII', header)
         assert not self.sh_flags & SHF_LINK_ORDER
         if self.sh_entsize != 0:
@@ -183,13 +181,25 @@ class Section:
             self.data = ''
         else:
             self.data = data[self.sh_offset:self.sh_offset + self.sh_size]
+        self.index = index
         self.relocated_by = []
+
+    @staticmethod
+    def from_parts(sh_name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data, index):
+        header = struct.pack('>IIIIIIIIII', sh_name, sh_type, sh_flags, 0, 0, len(data), sh_link, sh_info, sh_addralign, sh_entsize)
+        return Section(header, data, index)
 
     def lookup_str(self, index):
         assert self.sh_type == SHT_STRTAB
         to = self.data.find(b'\0', index)
         assert to != -1
         return self.data[index:to].decode('utf-8')
+
+    def add_str(self, string):
+        assert self.sh_type == SHT_STRTAB
+        ret = len(self.data)
+        self.data += bytes(string, 'utf-8') + b'\0'
+        return ret
 
     def is_rel(self):
         return self.sh_type == SHT_REL or self.sh_type == SHT_RELA
@@ -266,9 +276,17 @@ class ElfFile:
                 return s
         return None
 
-    def drop_debug_section(self):
-        self.sections = [s for s in self.sections if s.sh_type != SHT_MIPS_DEBUG]
-        self.elf_header.e_shnum = len(self.sections)
+    def add_section(self, name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data):
+        shstr = self.sections[self.elf_header.e_shstrndx]
+        sh_name = shstr.add_str(name)
+        s = Section.from_parts(sh_name=sh_name, sh_type=sh_type,
+                sh_flags=sh_flags, sh_link=sh_link, sh_info=sh_info,
+                sh_addralign=sh_addralign, sh_entsize=sh_entsize, data=data,
+                index=len(self.sections))
+        self.sections.append(s)
+        s.name = name
+        s.late_init(self.sections)
+        return s
 
     def write(self, filename):
         outfile = open(filename, 'wb')
@@ -281,7 +299,9 @@ class ElfFile:
             if align and outidx % align:
                 write_out(b'\0' * (align - outidx % align))
 
+        self.elf_header.e_shnum = len(self.sections)
         write_out(self.elf_header.to_bin())
+
         for s in self.sections:
             if s.sh_type != SHT_NOBITS and s.sh_type != SHT_NULL:
                 pad_out(s.sh_addralign)
@@ -463,14 +483,19 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
             new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
             if reltab.sh_type == SHT_REL:
-                assert target_reltab, ".rel.text must exist"
+                if not target_reltab:
+                    target_reltab = objfile.add_section('.rel.text',
+                            sh_type=SHT_REL, sh_flags=0,
+                            sh_link=objfile.symtab.index, sh_info=target.index,
+                            sh_addralign=4, sh_entsize=8, data=b'')
                 target_reltab.data += new_data
             else:
-                assert target_reltaba, ".rela.text must exist"
+                if not target_reltaba:
+                    target_reltaba = objfile.add_section('.rela.text',
+                            sh_type=SHT_RELA, sh_flags=0,
+                            sh_link=objfile.symtab.index, sh_info=target.index,
+                            sh_addralign=4, sh_entsize=12, data=b'')
                 target_reltaba.data += new_data
-
-        # Drop debug data since it's probably incorrect now
-        objfile.drop_debug_section()
 
         objfile.write(objfile_name)
     finally:
