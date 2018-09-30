@@ -1,5 +1,10 @@
 
 GLOBAL_ASM(
+.rdata
+.word 321321
+)
+
+GLOBAL_ASM(
 glabel test
 /* 000090 00400090 27BDFFF8 */  addiu $sp, $sp, -24
 /* 000094 00400094 18A00009 */  blez  $a1, .L004000BC
@@ -21,12 +26,19 @@ glabel test
 /* 0000C8 004000C8 27BD0008 */   addiu $sp, $sp, 24
 )
 
-unsigned g(void);
+const int rodata1[2] = {1};
+extern int some_rodata;
+
+unsigned g(int);
 unsigned f(void) {
-    return g();
+    return g(some_rodata);
 }
 
 GLOBAL_ASM(
+.rdata
+glabel some_rodata
+.word 123123
+.text
 glabel g
 /* 0000C0 004000C0 27BDFFE8 */  addiu $sp, $sp, -0x18
 /* 0000C4 004000C4 AFBF0014 */  sw    $ra, 0x14($sp)

@@ -2,6 +2,7 @@
 import argparse
 import tempfile
 import struct
+import copy
 import re
 import os
 
@@ -53,6 +54,7 @@ SHT_FINI_ARRAY    = 15
 SHT_PREINIT_ARRAY = 16
 SHT_GROUP         = 17
 SHT_SYMTAB_SHNDX  = 18
+SHT_MIPS_GPTAB    = 0x70000003
 SHT_MIPS_DEBUG    = 0x70000005
 SHT_MIPS_REGINFO  = 0x70000006
 SHT_MIPS_OPTIONS  = 0x7000000d
@@ -288,6 +290,12 @@ class ElfFile:
         s.late_init(self.sections)
         return s
 
+    def drop_irrelevant_sections(self):
+        # We can only drop sections at the end, since otherwise section
+        # references might be wrong. Luckily, these sections typically are.
+        while self.sections[-1].sh_type in [SHT_MIPS_DEBUG, SHT_MIPS_GPTAB]:
+            self.sections.pop()
+
     def write(self, filename):
         outfile = open(filename, 'wb')
         outidx = 0
@@ -325,85 +333,180 @@ def parse_source(f, print_source, optimized):
     else:
         min_instr_count = 4
         skip_instr_count = 4
+    SECTIONS = ['.data', '.text', '.rodata', '.bss']
     in_asm = False
     instr_count = 0
+    fn_rodata_size = 0
+    fn_data_size = 0
     asm_conts = []
     namectr = 0
     temp_fn_name = None
-    fn_name = None
+    first_fn_name = None
+    in_section = None
+    start_index = None
     asm_functions = []
-    for raw_line in f:
+    output_lines = []
+
+    for index, raw_line in enumerate(f):
         raw_line = raw_line.rstrip()
         line = raw_line.lstrip()
         output_line = ''
+        def instruction():
+            nonlocal instr_count
+            nonlocal output_line
+            assert first_fn_name is not None
+            instr_count += 1
+            if instr_count > skip_instr_count:
+                output_line += '*(volatile int*)0 = 0;'
+
+        def add_sized(size):
+            nonlocal fn_rodata_size
+            nonlocal fn_data_size
+            if in_section == '.text':
+                assert size % 4 == 0 and size > 0
+                for _ in range(size // 4):
+                    instruction()
+            elif in_section == '.data':
+                fn_data_size += size
+            elif in_section == '.rodata':
+                fn_rodata_size += size
+            else:
+                assert False
+
         if in_asm:
             if line.startswith(')'):
-                assert fn_name
-                assert instr_count >= min_instr_count
+                if instr_count > 0:
+                    assert first_fn_name
+                    assert instr_count >= min_instr_count
+                    output_line = '}'
+                else:
+                    output_lines[start_index] = ''
+                    output_line = ''
+                    temp_fn_name = None
                 in_asm = False
-                output_line = '}'
-                asm_functions.append((fn_name, temp_fn_name, asm_conts, instr_count))
+                rodata_name = None
+                if fn_rodata_size > 0:
+                    rodata_name = '_asmpp_rodata' + str(namectr)
+                    namectr += 1
+                    output_line += ' const char {}[{}] = {{1}};'.format(rodata_name, fn_rodata_size)
+                data_name = None
+                if fn_data_size > 0:
+                    data_name = '_asmpp_data' + str(namectr)
+                    namectr += 1
+                    output_line += ' char {}[{}] = {{1}};'.format(data_name, fn_data_size)
+                asm_functions.append((first_fn_name, asm_conts, {
+                    '.text': (temp_fn_name, instr_count * 4),
+                    '.rodata': (rodata_name, fn_rodata_size),
+                    '.data': (data_name, fn_data_size),
+                }))
             else:
                 line = re.sub(r'/\*.*?\*/', '', line)
                 line = re.sub(r'#.*', '', line)
                 line = line.strip()
                 asm_conts.append(line)
-                if line.startswith('glabel ') and fn_name is None:
-                    fn_name = line.split()[1]
-                if line.startswith('glabel ') or line.startswith('.') or not line:
-                    pass # labels, empty lines
+                if line.startswith('glabel ') and first_fn_name is None and in_section == '.text':
+                    first_fn_name = line.split()[1]
+                if not line:
+                    pass # empty line
+                elif line.startswith('glabel ') or (line.startswith('.') and line.endswith(':')):
+                    pass # label
+                elif line.startswith('.section') or line in ['.text', '.data', '.rdata']:
+                    # section change
+                    in_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
+                    assert in_section in SECTIONS, "unrecognized .section directive"
+                    assert in_section != '.bss' "bss sections not supported yet"
+                elif line.startswith('.incbin'):
+                    add_sized(int(line.split(',')[-1].strip(), 0))
+                elif line.startswith('.word') or line.startswith('.float'):
+                    add_sized(4)
+                elif line.startswith('.'):
+                    # .macro, .ascii, .balign, ...
+                    assert False, 'not supported yet: ' + line
                 else:
-                    # instruction
-                    assert fn_name is not None
-                    instr_count += 1
-                    if instr_count > skip_instr_count:
-                        output_line = '*(volatile int*)0 = 0;'
+                    # Unfortunately, macros are hard to support for .rodata --
+                    # we don't know how how space they will expand to before
+                    # running the assembler, but we need that information to
+                    # construct the C code. So if we need that we'll either
+                    # need to run the assembler twice (at least in some rare
+                    # cases), or change how this program is invoked.
+                    # Similarly, we can't currently deal with pseudo-instructions
+                    # that expand to several real instructions.
+                    assert in_section == '.text', "instruction or macro call in non-.text section? not supported: " + line
+                    instruction()
         else:
             if line.startswith('GLOBAL_ASM('):
                 in_asm = True
+                in_section = '.text'
                 instr_count = 0
                 asm_conts = []
-                temp_fn_name = 'tempfun' + str(namectr)
+                temp_fn_name = '_asmpp_func{}'.format(namectr)
                 namectr += 1
-                fn_name = None
+                start_index = index
+                first_fn_name = None
+                fn_rodata_size = 0
+                fn_data_size = 0
                 output_line = 'void {}(void) {{'.format(temp_fn_name)
             else:
                 output_line = raw_line
 
-        if print_source:
-            # Print exactly one output line per source line, to make compiler
-            # errors have correct line numbers.
-            print(output_line)
+        # Print exactly one output line per source line, to make compiler
+        # errors have correct line numbers.
+        output_lines.append(output_line)
+
+    if print_source:
+        for line in output_lines:
+            print(line)
 
     return asm_functions
 
 def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
+    SECTIONS = ['.data', '.text', '.rodata']
+
     with open(objfile_name, 'rb') as f:
         objfile = ElfFile(f.read())
 
-    prev_loc = 0
-    to_copy = []
+    prev_locs = {
+        '.text': 0,
+        '.data': 0,
+        '.rodata': 0,
+    }
+    to_copy = {
+        '.text': [],
+        '.data': [],
+        '.rodata': [],
+    }
     asm = []
 
     # Generate an assembly file with all the assembly we need to fill in. For
-    # simplicity we pad with nops so that addresses match exactly, so we don't
-    # have to fix up relocations/symbol references.
+    # simplicity we pad with nops/.space so that addresses match exactly, so we
+    # don't have to fix up relocations/symbol references.
     temp_names = set()
-    fn_names = set()
-    for (fn_name, temp_fn_name, body, num_instr) in functions:
-        loc = objfile.symtab.find_symbol(temp_fn_name)
-        assert loc is not None
-        assert loc[1] % 4 == 0
-        loc = loc[1] // 4
-        assert loc >= prev_loc
-        for i in range(loc - prev_loc):
-            asm.append('nop')
+    first_fn_names = set()
+    for (first_fn_name, body, data) in functions:
+        for sectype, (temp_name, size) in data.items():
+            if not temp_name:
+                continue
+            assert size > 0
+            temp_names.add(temp_name)
+            loc = objfile.symtab.find_symbol(temp_name)
+            assert loc is not None
+            loc = loc[1]
+            prev_loc = prev_locs[sectype]
+            assert loc >= prev_loc
+            if loc != prev_loc:
+                asm.append('.section ' + sectype)
+                if sectype == '.text':
+                    for i in range((loc - prev_loc) // 4):
+                        asm.append('nop')
+                else:
+                    asm.append('.space {}'.format(loc - prev_loc))
+            to_copy[sectype].append((loc, size))
+            prev_locs[sectype] = loc + size
+        if first_fn_name:
+            first_fn_names.add(first_fn_name)
+        asm.append('.text')
         for line in body:
             asm.append(line)
-        prev_loc = loc + num_instr
-        to_copy.append((loc, num_instr))
-        temp_names.add(temp_fn_name)
-        fn_names.add(fn_name)
 
     o_file = tempfile.NamedTemporaryFile(prefix='asm-processor', suffix='.o', delete=False)
     o_name = o_file.name
@@ -411,17 +514,18 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     s_file = tempfile.NamedTemporaryFile(prefix='asm-processor', suffix='.s', delete=False)
     s_name = s_file.name
     try:
-        if asm_prelude:
-            s_file.write(asm_prelude)
-        s_file.write(b'.section .text, "ax"\n\n')
+        s_file.write(asm_prelude + b'\n')
         for line in asm:
-            s_file.write((line + '\n').encode('utf-8'))
+            s_file.write(line.encode('utf-8') + b'\n')
         s_file.close()
         ret = os.system(assembler + " " + s_name + " -o " + o_name)
         if ret != 0:
             raise Exception("failed to assemble")
         with open(o_name, 'rb') as f:
             asm_objfile = ElfFile(f.read())
+
+        # Remove some clutter from objdump output
+        objfile.drop_irrelevant_sections()
 
         # Unify reginfo sections
         target_reginfo = objfile.find_section('.reginfo')
@@ -431,15 +535,21 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
             data[i] |= source_reginfo_data[i]
         target_reginfo.data = bytes(data)
 
-        # Move over code
-        source = asm_objfile.find_section('.text')
-        target = objfile.find_section('.text')
-        data = list(target.data)
-        for (pos, count) in to_copy:
-            pos *= 4
-            count *= 4
-            data[pos:pos + count] = source.data[pos:pos + count]
-        target.data = bytes(data)
+        # Move over section contents
+        copied_sources = []
+        copied_targets = []
+        for sectype in SECTIONS:
+            source = asm_objfile.find_section(sectype)
+            target = objfile.find_section(sectype)
+            if source is None or not to_copy[sectype]:
+                continue
+            assert target is not None, "must have a section to overwrite: " + sectype
+            data = list(target.data)
+            for (pos, count) in to_copy[sectype]:
+                data[pos:pos + count] = source.data[pos:pos + count]
+            target.data = bytes(data)
+            copied_sources.append(source)
+            copied_targets.append(target)
 
         # Move over symbols, deleting the temporary function labels.
         # Sometimes this naive procedure results in duplicate symbols, or UNDEF
@@ -458,10 +568,14 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         num_local_syms = asm_objfile.symtab.sh_info
         for s in asm_objfile.symtab.symbol_entries[num_local_syms:]:
             if s.st_shndx != SHN_UNDEF:
-                assert s.st_shndx == source.index, "Generated assembly .o must only have symbols for .text and UNDEF"
-                s.st_shndx = target.index
+                for i in range(len(copied_sources)):
+                    if s.st_shndx == copied_sources[i].index:
+                        s.st_shndx = copied_targets[i].index
+                        break
+                else:
+                    assert False, "Generated assembly .o must only have symbols for .text, .data, .rodata and UNDEF"
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
-                if s.name in fn_names:
+                if s.name in first_fn_names:
                     s.type = STT_FUNC
             s.st_name += strtab_adj
             s.new_index = index
@@ -470,32 +584,43 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         objfile.symtab.data = b''.join(s.to_bin() for s in new_entries)
 
         # Move over relocations
-        for reltab in target.relocated_by:
-            for rel in reltab.relocations:
-                rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
-            reltab.data = b''.join(rel.to_bin() for rel in reltab.relocations)
+        for sectype in SECTIONS:
+            source = asm_objfile.find_section(sectype)
+            target = objfile.find_section(sectype)
 
-        target_reltab = objfile.find_section('.rel.text')
-        target_reltaba = objfile.find_section('.rela.text')
-        for reltab in source.relocated_by:
-            for rel in reltab.relocations:
-                assert rel.sym_index >= num_local_syms, "Must only have relocations pointing to global symbols"
-                rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
-            new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
-            if reltab.sh_type == SHT_REL:
-                if not target_reltab:
-                    target_reltab = objfile.add_section('.rel.text',
-                            sh_type=SHT_REL, sh_flags=0,
-                            sh_link=objfile.symtab.index, sh_info=target.index,
-                            sh_addralign=4, sh_entsize=8, data=b'')
-                target_reltab.data += new_data
-            else:
-                if not target_reltaba:
-                    target_reltaba = objfile.add_section('.rela.text',
-                            sh_type=SHT_RELA, sh_flags=0,
-                            sh_link=objfile.symtab.index, sh_info=target.index,
-                            sh_addralign=4, sh_entsize=12, data=b'')
-                target_reltaba.data += new_data
+            if target is not None:
+                # fixup relocation symbol indices, since we butchered them above
+                for reltab in target.relocated_by:
+                    for rel in reltab.relocations:
+                        # hopefully we don't have relocations for local or
+                        # temporary symbols, so new_index exists
+                        rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
+                    reltab.data = b''.join(rel.to_bin() for rel in reltab.relocations)
+
+            if not source:
+                continue
+
+            target_reltab = objfile.find_section('.rel' + sectype)
+            target_reltaba = objfile.find_section('.rela' + sectype)
+            for reltab in source.relocated_by:
+                for rel in reltab.relocations:
+                    assert rel.sym_index >= num_local_syms, "Must only have relocations pointing to global symbols"
+                    rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
+                new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
+                if reltab.sh_type == SHT_REL:
+                    if not target_reltab:
+                        target_reltab = objfile.add_section('.rel' + sectype,
+                                sh_type=SHT_REL, sh_flags=0,
+                                sh_link=objfile.symtab.index, sh_info=target.index,
+                                sh_addralign=4, sh_entsize=8, data=b'')
+                    target_reltab.data += new_data
+                else:
+                    if not target_reltaba:
+                        target_reltaba = objfile.add_section('.rela' + sectype,
+                                sh_type=SHT_RELA, sh_flags=0,
+                                sh_link=objfile.symtab.index, sh_info=target.index,
+                                sh_addralign=4, sh_entsize=12, data=b'')
+                    target_reltaba.data += new_data
 
         objfile.write(objfile_name)
     finally:
@@ -524,7 +649,7 @@ def main():
         assert args.assembler is not None, "must pass assembler command"
         with open(args.filename) as f:
             functions = parse_source(f, print_source=False, optimized=args.optimized)
-        asm_prelude = None
+        asm_prelude = b''
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
