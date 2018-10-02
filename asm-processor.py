@@ -438,7 +438,7 @@ def parse_source(f, print_source, optimized):
                 elif line.startswith('.incbin'):
                     add_sized(int(line.split(',')[-1].strip(), 0))
                 elif line.startswith('.word') or line.startswith('.float'):
-                    add_sized(4)
+                    add_sized(4 * len(line.split(',')))
                 elif line.startswith('.'):
                     # .macro, .ascii, .balign, ...
                     assert False, 'not supported yet: ' + line
