@@ -515,13 +515,16 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     temp_names = set()
     first_fn_names = set()
     for (first_fn_name, body, fn_late_rodata, fn_late_rodata_body, data) in functions:
+        ifdefed = False
         for sectype, (temp_name, size) in data.items():
             if temp_name is None:
                 continue
             assert size > 0
             temp_names.add(temp_name)
             loc = objfile.symtab.find_symbol(temp_name)
-            assert loc is not None
+            if loc is None:
+                ifdefed = True
+                break
             loc = loc[1]
             prev_loc = prev_locs[sectype]
             assert loc >= prev_loc
@@ -534,13 +537,14 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                     asm.append('.space {}'.format(loc - prev_loc))
             to_copy[sectype].append((loc, size))
             prev_locs[sectype] = loc + size
-        if first_fn_name:
-            first_fn_names.add(first_fn_name)
-        asm.append('.text')
-        late_rodata.extend(fn_late_rodata)
-        late_rodata_asm.extend(fn_late_rodata_body)
-        for line in body:
-            asm.append(line)
+        if not ifdefed:
+            if first_fn_name:
+                first_fn_names.add(first_fn_name)
+            late_rodata.extend(fn_late_rodata)
+            late_rodata_asm.extend(fn_late_rodata_body)
+            asm.append('.text')
+            for line in body:
+                asm.append(line)
     if late_rodata_asm:
         late_rodata_source_name = '_asmpp_late_rodata'
         temp_names.add(late_rodata_source_name)
