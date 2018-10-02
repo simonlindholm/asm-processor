@@ -1,5 +1,8 @@
 .set noat
 .set noreorder
 .set gp=64
-.include "macros.inc"
+.macro glabel label
+    .global \label
+    \label:
+.endm
 
