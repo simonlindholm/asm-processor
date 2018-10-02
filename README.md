@@ -31,13 +31,12 @@ glabel rv
 
 .text
 glabel func4
-lui	$at, %hi(rv)
-jr	$ra
-lwc1	$f0, %lo(rv)($at)
-jr	$ra
+lui     $at, %hi(rv)
+jr      $ra
+lwc1    $f0, %lo(rv)($at)
+jr      $ra
 nop
-jr	$ra
-nop
+jr      $ra
 nop
 )
 ```
