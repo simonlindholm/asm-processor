@@ -576,8 +576,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         target_reginfo.data = bytes(data)
 
         # Move over section contents
-        copied_sources = []
-        copied_targets = []
         modified_text_positions = set()
         last_rodata_pos = 0
         for sectype in SECTIONS:
@@ -597,8 +595,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 elif sectype == '.rodata':
                     last_rodata_pos = pos + count
             target.data = bytes(data)
-            copied_sources.append(source)
-            copied_targets.append(target)
 
         # Move over late rodata. This is heuristic, sadly, since I can't think
         # of another way of doing it.
@@ -637,12 +633,9 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         num_local_syms = asm_objfile.symtab.sh_info
         for s in asm_objfile.symtab.symbol_entries[num_local_syms:]:
             if s.st_shndx != SHN_UNDEF:
-                for i in range(len(copied_sources)):
-                    if s.st_shndx == copied_sources[i].index:
-                        s.st_shndx = copied_targets[i].index
-                        break
-                else:
-                    assert False, "Generated assembly .o must only have symbols for .text, .data, .rodata and UNDEF"
+                section_name = asm_objfile.sections[s.st_shndx].name
+                assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata and UNDEF, but found {}".format(section_name)
+                s.st_shndx = objfile.find_section(section_name).index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in first_fn_names:
                     s.type = STT_FUNC
