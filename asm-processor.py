@@ -685,6 +685,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 for rel in reltab.relocations:
                     assert rel.sym_index >= num_local_syms, "Must only have relocations pointing to global symbols"
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
+                    if sectype == '.rodata' and rel.r_offset in moved_late_rodata:
+                        rel.r_offset = moved_late_rodata[rel.r_offset]
                 new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
                 if reltab.sh_type == SHT_REL:
                     if not target_reltab:
