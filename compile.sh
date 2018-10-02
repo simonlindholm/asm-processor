@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 INPUT="$1"
 OUTPUT="${INPUT%.c}.o"
 

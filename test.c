@@ -1,10 +1,13 @@
 
 GLOBAL_ASM(
 .rdata
-.word 321321
+.word 0x1212
 )
 
 GLOBAL_ASM(
+.late_rodata
+.word 0x123123
+.text
 glabel test
 /* 000090 00400090 27BDFFF8 */  addiu $sp, $sp, -24
 /* 000094 00400094 18A00009 */  blez  $a1, .L004000BC
@@ -29,15 +32,18 @@ glabel test
 const int rodata1[2] = {1};
 extern int some_rodata;
 
-unsigned g(int);
+unsigned g(float, int);
 unsigned f(void) {
-    return g(some_rodata);
+    return g(1.1f, some_rodata);
 }
 
 GLOBAL_ASM(
 .rdata
 glabel some_rodata
-.word 123123
+.word 0x1313
+.text
+.late_rodata
+.word 0x321321
 .text
 glabel g
 /* 0000C0 004000C0 27BDFFE8 */  addiu $sp, $sp, -0x18
