@@ -42,3 +42,13 @@ nop
 ```
 
 To compile the file, run `./compile.sh file.c`, or invoke the `asm-processor.py` script in a similar manner. (`compile.sh` is mostly just intended to describe example usage.)
+
+### What is supported?
+
+`.text`, `.data`, and `.rodata` sections, and `-g` and `-O2` flags to the IRIX compiler.
+
+### What's up with "late rodata"?
+
+The IRIX compiler emits rodata in two passes: first array/string contents, then large literals/switch jump tables.
+
+Data declared within `.rdata`/`.section .rodata` will end up in the first half, and `.late_rodata`/`.section .late_rodata` in the second half.
