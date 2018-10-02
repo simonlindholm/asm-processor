@@ -45,7 +45,13 @@ To compile the file, run `./compile.sh file.c`, or invoke the `asm-processor.py`
 
 ### What is supported?
 
-`.text`, `.data`, and `.rodata` sections, and `-g` and `-O2` flags to the IRIX compiler.
+`.text`, `.data`, and `.rodata` sections, `.word`/`.incbin`, and `-g` and `-O2` flags to the IRIX compiler.
+
+### What is not supported?
+
+`.bss` sections, complicated assembly (.ifdef, macro declarations/calls other than `glabel`, pseudo-instructions that expand to several real instructions), too large `.late_rodata`/`.text` ratios.
+
+C `#ifdef`s only work outside of `GLOBAL_ASM` calls, but may otherwise be able to replace `.ifdef`.
 
 ### What's up with "late rodata"?
 
