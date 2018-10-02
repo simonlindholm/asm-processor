@@ -602,6 +602,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
 
         # Move over late rodata. This is heuristic, sadly, since I can't think
         # of another way of doing it.
+        moved_late_rodata = {}
         if late_rodata:
             source = asm_objfile.find_section('.rodata')
             target = objfile.find_section('.rodata')
@@ -612,6 +613,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
             for dummy_bytes in late_rodata:
                 pos = target.data.index(dummy_bytes, last_rodata_pos)
                 new_data[pos:pos+4] = source.data[source_pos:source_pos+4]
+                moved_late_rodata[source_pos] = pos
                 last_rodata_pos = pos + 4
                 source_pos += 4
             target.data = bytes(new_data)
@@ -646,6 +648,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                     s.type = STT_FUNC
             if s.name in temp_names:
                 continue
+            if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
+                s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
             s.new_index = index
             index += 1
