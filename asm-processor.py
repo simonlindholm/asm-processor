@@ -241,6 +241,14 @@ class Section:
             entries.append(Relocation(self.data[i:i+self.sh_entsize], self.sh_type))
         self.relocations = entries
 
+    def local_symbols(self):
+        assert self.sh_type == SHT_SYMTAB
+        return self.symbol_entries[:self.sh_info]
+
+    def global_symbols(self):
+        assert self.sh_type == SHT_SYMTAB
+        return self.symbol_entries[self.sh_info:]
+
 
 class ElfFile:
     def __init__(self, data):
@@ -623,20 +631,30 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         strtab_adj = len(objfile.symtab.strtab.data)
         objfile.symtab.strtab.data += asm_objfile.symtab.strtab.data
 
+        # Find relocated symbols
+        relocated_symbols = set()
+        for sectype in SECTIONS:
+            for obj in [asm_objfile, objfile]:
+                sec = obj.find_section(sectype)
+                if sec is None:
+                    continue
+                for reltab in sec.relocated_by:
+                    for rel in reltab.relocations:
+                        relocated_symbols.add(obj.symtab.symbol_entries[rel.sym_index])
+
         # Move over symbols, deleting the temporary function labels.
         # Sometimes this naive procedure results in duplicate symbols, or UNDEF
         # symbols that are also defined the same .o file. Hopefully that's fine.
-        # Skip over local symbols -- we don't need them, and they would need to
-        # be reordered before all the existing global ones.
-        new_entries = []
-        index = 0
-        for s in objfile.symtab.symbol_entries:
-            if s.name not in temp_names:
-                s.new_index = index
-                index += 1
-                new_entries.append(s)
-        num_local_syms = asm_objfile.symtab.sh_info
-        for s in asm_objfile.symtab.symbol_entries[num_local_syms:]:
+        # Skip over local symbols that aren't used relocated against, to avoid
+        # conflicts.
+        new_local_syms = [s for s in objfile.symtab.local_symbols() if s.name not in temp_names]
+        new_global_syms = [s for s in objfile.symtab.global_symbols() if s.name not in temp_names]
+        for i, s in enumerate(asm_objfile.symtab.symbol_entries):
+            is_local = (i < asm_objfile.symtab.sh_info)
+            if is_local and s not in relocated_symbols:
+                continue
+            if s.name in temp_names:
+                continue
             if s.st_shndx != SHN_UNDEF:
                 section_name = asm_objfile.sections[s.st_shndx].name
                 assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata and UNDEF, but found {}".format(section_name)
@@ -644,15 +662,18 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in first_fn_names:
                     s.type = STT_FUNC
-            if s.name in temp_names:
-                continue
             if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
                 s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
-            s.new_index = index
-            index += 1
-            new_entries.append(s)
-        objfile.symtab.data = b''.join(s.to_bin() for s in new_entries)
+            if is_local:
+                new_local_syms.append(s)
+            else:
+                new_global_syms.append(s)
+        new_syms = new_local_syms + new_global_syms
+        for i, s in enumerate(new_syms):
+            s.new_index = i
+        objfile.symtab.data = b''.join(s.to_bin() for s in new_syms)
+        objfile.symtab.sh_info = len(new_local_syms)
 
         # Move over relocations
         for sectype in SECTIONS:
@@ -681,7 +702,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
             target_reltaba = objfile.find_section('.rela' + sectype)
             for reltab in source.relocated_by:
                 for rel in reltab.relocations:
-                    assert rel.sym_index >= num_local_syms, "Must only have relocations pointing to global symbols"
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
                     if sectype == '.rodata' and rel.r_offset in moved_late_rodata:
                         rel.r_offset = moved_late_rodata[rel.r_offset]
