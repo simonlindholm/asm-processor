@@ -728,6 +728,8 @@ def main():
         assert args.assembler is not None, "must pass assembler command"
         with open(args.filename) as f:
             functions = parse_source(f, print_source=False, optimized=args.optimized)
+        if not functions:
+            return
         asm_prelude = b''
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
