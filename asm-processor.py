@@ -338,7 +338,7 @@ def parse_source(f, print_source, optimized):
     fn_section_sizes = None
     fn_ins_inds = None
     asm_conts = []
-    late_rodata_asm_conts = []
+    late_rodata_asm_conts = None
     first_fn_name = None
     cur_section = None
     start_index = None
@@ -466,6 +466,7 @@ def parse_source(f, print_source, optimized):
                 cur_section = '.text'
                 instr_count = 0
                 asm_conts = []
+                late_rodata_asm_conts = []
                 start_index = len(output_lines)
                 first_fn_name = None
                 fn_section_sizes = {
