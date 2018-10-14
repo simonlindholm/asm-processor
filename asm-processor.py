@@ -378,7 +378,9 @@ def parse_source(f, print_source, optimized):
             return False
 
         def add_sized(size):
-            assert size % 4 == 0 and size >= 0
+            if cur_section in ['.text', '.late_rodata']:
+                assert size % 4 == 0, "size must be a multiple of 4 on line: " + raw_line
+            assert size >= 0
             fn_section_sizes[cur_section] += size
             if cur_section == '.text':
                 for _ in range(size // 4):
@@ -447,6 +449,10 @@ def parse_source(f, print_source, optimized):
                     add_sized(int(line.split(',')[-1].strip(), 0))
                 elif line.startswith('.word') or line.startswith('.float'):
                     add_sized(4 * len(line.split(',')))
+                elif line.startswith('.double'):
+                    add_sized(8 * len(line.split(',')))
+                elif line.startswith('.space'):
+                    add_sized(int(line.split()[1], 0))
                 elif line.startswith('.'):
                     # .macro, .ascii, .balign, ...
                     assert False, 'not supported yet: ' + line
