@@ -128,7 +128,7 @@ class Symbol:
 
     def __init__(self, data, strtab):
         self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx = struct.unpack('>IIIBBH', data)
-        assert self.st_shndx != SHN_XINDEX
+        assert self.st_shndx != SHN_XINDEX, "too many sections (SHN_XINDEX not supported)"
         self.bind = st_info >> 4
         self.type = st_info & 15
         self.name = strtab.lookup_str(self.st_name)
@@ -253,7 +253,7 @@ class Section:
 class ElfFile:
     def __init__(self, data):
         self.data = data
-        assert data[:4] == b'\x7fELF'
+        assert data[:4] == b'\x7fELF', "not an ELF file"
 
         self.elf_header = ElfHeader(data[0:52])
 
@@ -370,7 +370,7 @@ def parse_source(f, print_source, optimized):
         def instruction():
             nonlocal instr_count
             nonlocal output_line
-            assert first_fn_name is not None
+            assert first_fn_name is not None, ".text block without an initial glabel"
             instr_count += 1
             if instr_count > skip_instr_count:
                 output_line += '*(volatile int*)0 = 0;'
@@ -393,8 +393,8 @@ def parse_source(f, print_source, optimized):
                 if instr_count > 0:
                     temp_fn_name = make_name('func')
                     output_lines[start_index] = 'void {}(void) {{'.format(temp_fn_name)
-                    assert first_fn_name
-                    assert instr_count >= min_instr_count
+                    assert first_fn_name, ".text block without a glabel name"
+                    assert instr_count >= min_instr_count, "too short .text block"
                     output_line = '}'
                 late_rodata = []
                 if fn_section_sizes['.late_rodata'] > 0:
@@ -454,7 +454,7 @@ def parse_source(f, print_source, optimized):
                 elif line.startswith('.space'):
                     add_sized(int(line.split()[1], 0))
                 elif line.startswith('.'):
-                    # .macro, .ascii, .balign, ...
+                    # .macro, .ascii, .asciiz, .balign, .align, ...
                     assert False, 'not supported yet: ' + line
                 else:
                     # Unfortunately, macros are hard to support for .rodata --
