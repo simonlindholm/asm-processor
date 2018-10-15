@@ -437,7 +437,7 @@ def parse_source(f, print_source, optimized):
                     first_fn_name = line.split()[1]
                 if not line:
                     pass # empty line
-                elif line.startswith('glabel ') or (line.startswith('.') and line.endswith(':')):
+                elif line.startswith('glabel ') or (' ' not in line and line.endswith(':')):
                     pass # label
                 elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.late_rodata']:
                     # section change
