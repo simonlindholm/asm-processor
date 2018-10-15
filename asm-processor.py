@@ -423,10 +423,15 @@ def parse_source(f, print_source, optimized):
                 if fn_section_sizes['.data'] > 0:
                     data_name = make_name('data')
                     output_line += ' char {}[{}] = {{1}};'.format(data_name, fn_section_sizes['.data'])
+                bss_name = None
+                if fn_section_sizes['.bss'] > 0:
+                    bss_name = make_name('bss')
+                    output_line += ' char {}[{}];'.format(bss_name, fn_section_sizes['.bss'])
                 asm_functions.append((first_fn_name, asm_conts, late_rodata, late_rodata_asm_conts, {
                     '.text': (temp_fn_name, fn_section_sizes['.text']),
                     '.data': (data_name, fn_section_sizes['.data']),
                     '.rodata': (rodata_name, fn_section_sizes['.rodata']),
+                    '.bss': (bss_name, fn_section_sizes['.bss']),
                 }))
             else:
                 line = re.sub(r'/\*.*?\*/', '', line)
@@ -439,12 +444,11 @@ def parse_source(f, print_source, optimized):
                     pass # empty line
                 elif line.startswith('glabel ') or (' ' not in line and line.endswith(':')):
                     pass # label
-                elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.late_rodata']:
+                elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.bss', '.late_rodata']:
                     # section change
                     cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
                     changed_section = True
                     assert cur_section in SECTIONS, "unrecognized .section directive"
-                    assert cur_section != '.bss' "bss sections not supported yet"
                 elif line.startswith('.incbin'):
                     add_sized(int(line.split(',')[-1].strip(), 0))
                 elif line.startswith('.word') or line.startswith('.float'):
@@ -486,6 +490,7 @@ def parse_source(f, print_source, optimized):
                 fn_section_sizes = {
                     '.text': 0,
                     '.data': 0,
+                    '.bss': 0,
                     '.rodata': 0,
                     '.late_rodata': 0,
                 }
@@ -504,7 +509,7 @@ def parse_source(f, print_source, optimized):
     return asm_functions
 
 def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
-    SECTIONS = ['.data', '.text', '.rodata']
+    SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
         objfile = ElfFile(f.read())
@@ -513,6 +518,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         '.text': 0,
         '.data': 0,
         '.rodata': 0,
+        '.bss': 0,
     }
     to_copy = {
         '.text': [],
@@ -550,7 +556,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                         asm.append('nop')
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
-            to_copy[sectype].append((loc, size))
+            if sectype != '.bss':
+                to_copy[sectype].append((loc, size))
             prev_locs[sectype] = loc + size
         if not ifdefed:
             if first_fn_name:
@@ -598,6 +605,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         modified_text_positions = set()
         last_rodata_pos = 0
         for sectype in SECTIONS:
+            if sectype == '.bss':
+                continue
             source = asm_objfile.find_section(sectype)
             target = objfile.find_section(sectype)
             if source is None or not to_copy[sectype]:

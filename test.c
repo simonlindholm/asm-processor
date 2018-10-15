@@ -29,6 +29,14 @@ glabel test
 /* 0000C8 004000C8 27BD0008 */   addiu $sp, $sp, 24
 )
 
+char bss1[3];
+GLOBAL_ASM(
+.bss
+bss2:
+.space 3
+)
+char bss3[3];
+char bss4[3];
 const int rodata1[2] = {1};
 extern int some_rodata;
 
