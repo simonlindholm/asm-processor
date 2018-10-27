@@ -333,13 +333,21 @@ class ElfFile:
         outfile.close()
 
 
-def parse_source(f, print_source, optimized):
+def parse_source(f, print_source, optimized, framepointer):
     if optimized:
-        min_instr_count = 2
-        skip_instr_count = 1
+        if framepointer:
+            min_instr_count = 6
+            skip_instr_count = 5
+        else:
+            min_instr_count = 2
+            skip_instr_count = 1
     else:
-        min_instr_count = 4
-        skip_instr_count = 4
+        if framepointer:
+            min_instr_count = 7
+            skip_instr_count = 7
+        else:
+            min_instr_count = 4
+            skip_instr_count = 4
     SECTIONS = ['.data', '.text', '.rodata', '.late_rodata', '.bss']
     in_asm = False
     instr_count = 0
@@ -751,6 +759,7 @@ def main():
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
+    parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-O2', dest='optimized', action='store_true')
     group.add_argument('-g', dest='optimized', action='store_false')
@@ -758,11 +767,11 @@ def main():
 
     if args.objfile is None:
         with open(args.filename) as f:
-            parse_source(f, print_source=True, optimized=args.optimized)
+            parse_source(f, print_source=True, optimized=args.optimized, framepointer=args.framepointer)
     else:
         assert args.assembler is not None, "must pass assembler command"
         with open(args.filename) as f:
-            functions = parse_source(f, print_source=False, optimized=args.optimized)
+            functions = parse_source(f, print_source=False, optimized=args.optimized, framepointer=args.framepointer)
         if not functions:
             return
         asm_prelude = b''
