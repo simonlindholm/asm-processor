@@ -3,6 +3,7 @@ import argparse
 import tempfile
 import struct
 import copy
+import sys
 import re
 import os
 
@@ -348,9 +349,10 @@ def parse_source(f, print_source, optimized, framepointer):
         else:
             min_instr_count = 4
             skip_instr_count = 4
+    MAX_FN_SIZE = 100
     SECTIONS = ['.data', '.text', '.rodata', '.late_rodata', '.bss']
+
     in_asm = False
-    instr_count = 0
     fn_section_sizes = None
     fn_ins_inds = None
     asm_conts = []
@@ -375,15 +377,6 @@ def parse_source(f, print_source, optimized, framepointer):
         raw_line = raw_line.rstrip()
         line = raw_line.lstrip()
         output_line = ''
-        def instruction():
-            nonlocal instr_count
-            nonlocal output_line
-            assert first_fn_name is not None, ".text block without an initial glabel"
-            instr_count += 1
-            if instr_count > skip_instr_count:
-                output_line += '*(volatile int*)0 = 0;'
-                return True
-            return False
 
         def add_sized(size):
             if cur_section in ['.text', '.late_rodata']:
@@ -391,27 +384,20 @@ def parse_source(f, print_source, optimized, framepointer):
             assert size >= 0
             fn_section_sizes[cur_section] += size
             if cur_section == '.text':
-                for _ in range(size // 4):
-                    instruction()
+                assert first_fn_name is not None, ".text block without an initial glabel"
+                fn_ins_inds.append((len(output_lines), size // 4))
 
         if in_asm:
             if line.startswith(')'):
                 in_asm = False
-                temp_fn_name = None
-                if instr_count > 0:
-                    temp_fn_name = make_name('func')
-                    output_lines[start_index] = 'void {}(void) {{'.format(temp_fn_name)
-                    assert first_fn_name, ".text block without a glabel name"
-                    assert instr_count >= min_instr_count, "too short .text block"
-                    output_line = '}'
                 late_rodata = []
+                late_rodata_fn_output = []
                 if fn_section_sizes['.late_rodata'] > 0:
                     # Generate late rodata by emitting unique float constants.
                     # This requires 3 instructions for each 4 bytes of rodata.
                     # Doubles would increase 4 to 8, but unfortunately we know
                     # too little about alignment to be able to use them.
                     size = fn_section_sizes['.late_rodata'] // 4
-                    assert size*3 <= len(fn_ins_inds), "late rodata to text ratio is too high: {} / {} must be <= 1/3".format(size, len(fn_ins_inds))
                     for i in range(0, size*3, 3):
                         if (cur_late_rodata_hex & 0xffff) == 0:
                             # Avoid lui
@@ -420,9 +406,48 @@ def parse_source(f, print_source, optimized, framepointer):
                         cur_late_rodata_hex += 1
                         late_rodata.append(dummy_bytes)
                         fval, = struct.unpack('>f', dummy_bytes)
-                        output_lines[fn_ins_inds[i]] = '*(volatile float*)0 = {}f;'.format(fval)
-                        output_lines[fn_ins_inds[i+1]] = ''
-                        output_lines[fn_ins_inds[i+2]] = ''
+                        late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
+                        late_rodata_fn_output.append('')
+                        late_rodata_fn_output.append('')
+                temp_fn_name = None
+                if fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
+                    temp_fn_name = make_name('func')
+                    output_lines[start_index] = 'void {}(void) {{'.format(temp_fn_name)
+                    instr_count = fn_section_sizes['.text'] // 4
+                    assert instr_count >= min_instr_count, "too short .text block"
+                    available_instr_count = 0
+                    tot_emitted = 0
+                    tot_skipped = 0
+                    fn_emitted = 0
+                    fn_skipped = 0
+                    rodata_stack = late_rodata_fn_output[::-1]
+                    for (line, count) in fn_ins_inds:
+                        for _ in range(count):
+                            if (fn_emitted > MAX_FN_SIZE and instr_count - tot_emitted > min_instr_count and
+                                    (not rodata_stack or rodata_stack[-1])):
+                                # Don't let functions become too large. When a function reaches 284
+                                # instructions, and -O2 -framepointer flags are passed, the IRIX
+                                # compiler decides it is a great idea to start optimizing more.
+                                fn_emitted = 0
+                                fn_skipped = 0
+                                output_lines[line] += ' }} void {}(void) {{ '.format(make_name('large_func'))
+                            if fn_skipped < skip_instr_count:
+                                fn_skipped += 1
+                                tot_skipped += 1
+                            elif rodata_stack:
+                                output_lines[line] += rodata_stack.pop()
+                            else:
+                                available_instr_count += 1
+                                output_lines[line] += '*(volatile int*)0 = 0;'
+                            tot_emitted += 1
+                            fn_emitted += 1
+                    if rodata_stack:
+                        size = len(late_rodata_fn_output) // 3
+                        available = instr_count - tot_skipped
+                        print("late rodata to text ratio is too high: {} / {} must be <= 1/3"
+                                .format(size, available), file=sys.stderr)
+                        exit(1)
+                    output_line = '}'
                 rodata_name = None
                 if fn_section_sizes['.rodata'] > 0:
                     rodata_name = make_name('rodata')
@@ -478,9 +503,7 @@ def parse_source(f, print_source, optimized, framepointer):
                     # Similarly, we can't currently deal with pseudo-instructions
                     # that expand to several real instructions.
                     assert cur_section == '.text', "instruction or macro call in non-.text section? not supported: " + line
-                    fn_section_sizes['.text'] += 4
-                    if instruction():
-                        fn_ins_inds.append(len(output_lines))
+                    add_sized(4)
                 if cur_section == '.late_rodata':
                     if not changed_section:
                         late_rodata_asm_conts.append(line)
@@ -490,7 +513,6 @@ def parse_source(f, print_source, optimized, framepointer):
             if line.startswith('GLOBAL_ASM('):
                 in_asm = True
                 cur_section = '.text'
-                instr_count = 0
                 asm_conts = []
                 late_rodata_asm_conts = []
                 start_index = len(output_lines)
