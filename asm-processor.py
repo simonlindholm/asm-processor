@@ -334,6 +334,9 @@ class ElfFile:
         outfile.close()
 
 
+def is_temp_name(name):
+    return name.startswith('_asmpp_')
+
 def parse_source(f, print_source, optimized, framepointer):
     if optimized:
         if framepointer:
@@ -563,7 +566,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     # Generate an assembly file with all the assembly we need to fill in. For
     # simplicity we pad with nops/.space so that addresses match exactly, so we
     # don't have to fix up relocations/symbol references.
-    temp_names = set()
     first_fn_names = set()
     for (first_fn_name, body, fn_late_rodata, fn_late_rodata_body, data) in functions:
         ifdefed = False
@@ -571,7 +573,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
             if temp_name is None:
                 continue
             assert size > 0
-            temp_names.add(temp_name)
             loc = objfile.symtab.find_symbol(temp_name)
             if loc is None:
                 ifdefed = True
@@ -599,7 +600,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 asm.append(line)
     if late_rodata_asm:
         late_rodata_source_name = '_asmpp_late_rodata'
-        temp_names.add(late_rodata_source_name)
         asm.append('.rdata')
         asm.append('glabel {}'.format(late_rodata_source_name))
         asm.extend(late_rodata_asm)
@@ -692,13 +692,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         # symbols that are also defined the same .o file. Hopefully that's fine.
         # Skip over local symbols that aren't used relocated against, to avoid
         # conflicts.
-        new_local_syms = [s for s in objfile.symtab.local_symbols() if s.name not in temp_names]
-        new_global_syms = [s for s in objfile.symtab.global_symbols() if s.name not in temp_names]
+        new_local_syms = [s for s in objfile.symtab.local_symbols() if not is_temp_name(s.name)]
+        new_global_syms = [s for s in objfile.symtab.global_symbols() if not is_temp_name(s.name)]
         for i, s in enumerate(asm_objfile.symtab.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
                 continue
-            if s.name in temp_names:
+            if is_temp_name(s.name):
                 continue
             if s.st_shndx != SHN_UNDEF:
                 section_name = asm_objfile.sections[s.st_shndx].name
