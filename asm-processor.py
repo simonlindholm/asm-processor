@@ -337,21 +337,29 @@ class ElfFile:
 def is_temp_name(name):
     return name.startswith('_asmpp_')
 
-def parse_source(f, print_source, optimized, framepointer):
-    if optimized:
+def parse_source(f, print_source, opt, framepointer):
+    if opt == 'O2':
         if framepointer:
             min_instr_count = 6
             skip_instr_count = 5
         else:
             min_instr_count = 2
             skip_instr_count = 1
-    else:
+    elif opt == 'g':
         if framepointer:
             min_instr_count = 7
             skip_instr_count = 7
         else:
             min_instr_count = 4
             skip_instr_count = 4
+    else:
+        assert opt == 'g3'
+        if framepointer:
+            min_instr_count = 4
+            skip_instr_count = 4
+        else:
+            min_instr_count = 2
+            skip_instr_count = 2
     MAX_FN_SIZE = 100
     SECTIONS = ['.data', '.text', '.rodata', '.late_rodata', '.bss']
 
@@ -782,18 +790,25 @@ def main():
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
+    parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('-O2', dest='optimized', action='store_true')
-    group.add_argument('-g', dest='optimized', action='store_false')
+    group.add_argument('-O2', dest='o2', action='store_true')
+    group.add_argument('-g', dest='o2', action='store_false')
     args = parser.parse_args()
+    opt = 'O2' if args.o2 else 'g'
+    if args.g3:
+        if opt != 'O2':
+            print("-g3 is only supported together with -O2", file=sys.stderr)
+            exit(1)
+        opt = 'g3'
 
     if args.objfile is None:
         with open(args.filename) as f:
-            parse_source(f, print_source=True, optimized=args.optimized, framepointer=args.framepointer)
+            parse_source(f, print_source=True, opt=opt, framepointer=args.framepointer)
     else:
         assert args.assembler is not None, "must pass assembler command"
         with open(args.filename) as f:
-            functions = parse_source(f, print_source=False, optimized=args.optimized, framepointer=args.framepointer)
+            functions = parse_source(f, print_source=False, opt=opt, framepointer=args.framepointer)
         if not functions:
             return
         asm_prelude = b''
