@@ -708,15 +708,15 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 continue
             if is_temp_name(s.name):
                 continue
-            if s.st_shndx != SHN_UNDEF:
+            if s.st_shndx not in [SHN_UNDEF, SHN_ABS]:
                 section_name = asm_objfile.sections[s.st_shndx].name
-                assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata and UNDEF, but found {}".format(section_name)
+                assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found {}".format(section_name)
                 s.st_shndx = objfile.find_section(section_name).index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in first_fn_names:
                     s.type = STT_FUNC
-            if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
-                s.st_value = moved_late_rodata[s.st_value]
+                if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
+                    s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
             if is_local:
                 new_local_syms.append(s)
