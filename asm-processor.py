@@ -368,7 +368,7 @@ def parse_source(f, print_source, opt, framepointer):
     fn_ins_inds = None
     asm_conts = []
     late_rodata_asm_conts = None
-    first_fn_name = None
+    text_glabels = None
     cur_section = None
     start_index = None
     asm_functions = []
@@ -395,7 +395,7 @@ def parse_source(f, print_source, opt, framepointer):
             assert size >= 0
             fn_section_sizes[cur_section] += size
             if cur_section == '.text':
-                assert first_fn_name is not None, ".text block without an initial glabel"
+                assert text_glabels, ".text block without an initial glabel"
                 fn_ins_inds.append((len(output_lines), size // 4))
 
         if in_asm:
@@ -471,7 +471,7 @@ def parse_source(f, print_source, opt, framepointer):
                 if fn_section_sizes['.bss'] > 0:
                     bss_name = make_name('bss')
                     output_line += ' char {}[{}];'.format(bss_name, fn_section_sizes['.bss'])
-                asm_functions.append((first_fn_name, asm_conts, late_rodata, late_rodata_asm_conts, {
+                asm_functions.append((text_glabels, asm_conts, late_rodata, late_rodata_asm_conts, {
                     '.text': (temp_fn_name, fn_section_sizes['.text']),
                     '.data': (data_name, fn_section_sizes['.data']),
                     '.rodata': (rodata_name, fn_section_sizes['.rodata']),
@@ -482,8 +482,8 @@ def parse_source(f, print_source, opt, framepointer):
                 line = re.sub(r'#.*', '', line)
                 line = line.strip()
                 changed_section = False
-                if line.startswith('glabel ') and first_fn_name is None and cur_section == '.text':
-                    first_fn_name = line.split()[1]
+                if line.startswith('glabel ') and cur_section == '.text':
+                    text_glabels.append(line.split()[1])
                 if not line:
                     pass # empty line
                 elif line.startswith('glabel ') or (' ' not in line and line.endswith(':')):
@@ -527,7 +527,7 @@ def parse_source(f, print_source, opt, framepointer):
                 asm_conts = []
                 late_rodata_asm_conts = []
                 start_index = len(output_lines)
-                first_fn_name = None
+                text_glabels = []
                 fn_section_sizes = {
                     '.text': 0,
                     '.data': 0,
@@ -574,8 +574,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     # Generate an assembly file with all the assembly we need to fill in. For
     # simplicity we pad with nops/.space so that addresses match exactly, so we
     # don't have to fix up relocations/symbol references.
-    first_fn_names = set()
-    for (first_fn_name, body, fn_late_rodata, fn_late_rodata_body, data) in functions:
+    all_text_glabels = set()
+    for (text_glabels, body, fn_late_rodata, fn_late_rodata_body, data) in functions:
         ifdefed = False
         for sectype, (temp_name, size) in data.items():
             if temp_name is None:
@@ -599,8 +599,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 to_copy[sectype].append((loc, size))
             prev_locs[sectype] = loc + size
         if not ifdefed:
-            if first_fn_name:
-                first_fn_names.add(first_fn_name)
+            all_text_glabels.update(text_glabels)
             late_rodata.extend(fn_late_rodata)
             late_rodata_asm.extend(fn_late_rodata_body)
             asm.append('.text')
@@ -713,7 +712,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found {}".format(section_name)
                 s.st_shndx = objfile.find_section(section_name).index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
-                if s.name in first_fn_names:
+                if s.name in all_text_glabels:
                     s.type = STT_FUNC
                 if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
                     s.st_value = moved_late_rodata[s.st_value]
