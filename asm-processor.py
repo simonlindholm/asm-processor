@@ -366,8 +366,9 @@ def parse_source(f, print_source, opt, framepointer):
     in_asm = False
     fn_section_sizes = None
     fn_ins_inds = None
-    asm_conts = []
+    asm_conts = None
     late_rodata_asm_conts = None
+    late_rodata_alignment = None
     text_glabels = None
     cur_section = None
     start_index = None
@@ -406,18 +407,28 @@ def parse_source(f, print_source, opt, framepointer):
                 if fn_section_sizes['.late_rodata'] > 0:
                     # Generate late rodata by emitting unique float constants.
                     # This requires 3 instructions for each 4 bytes of rodata.
-                    # Doubles would increase 4 to 8, but unfortunately we know
-                    # too little about alignment to be able to use them.
+                    # If we know alignment, we can use doubles, which give 3
+                    # instructions for 8 bytes of rodata.
                     size = fn_section_sizes['.late_rodata'] // 4
-                    for i in range(0, size*3, 3):
+                    skip_next = False
+                    for i in range(size):
+                        if skip_next:
+                            skip_next = False
+                            continue
                         if (cur_late_rodata_hex & 0xffff) == 0:
                             # Avoid lui
                             cur_late_rodata_hex += 1
                         dummy_bytes = struct.pack('>I', cur_late_rodata_hex)
                         cur_late_rodata_hex += 1
                         late_rodata.append(dummy_bytes)
-                        fval, = struct.unpack('>f', dummy_bytes)
-                        late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
+                        if late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
+                            late_rodata.append(dummy_bytes)
+                            fval, = struct.unpack('>d', dummy_bytes * 2)
+                            late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
+                            skip_next = True
+                        else:
+                            fval, = struct.unpack('>f', dummy_bytes)
+                            late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
                         late_rodata_fn_output.append('')
                         late_rodata_fn_output.append('')
                 temp_fn_name = None
@@ -457,6 +468,8 @@ def parse_source(f, print_source, opt, framepointer):
                         available = instr_count - tot_skipped
                         print("late rodata to text ratio is too high: {} / {} must be <= 1/3"
                                 .format(size, available), file=sys.stderr)
+                        print("add a .late_rodata_alignment (4|8) to the .late_rodata "
+                                "block to double the allowed ratio.", file=sys.stderr)
                         exit(1)
                     output_line = '}'
                 rodata_name = None
@@ -493,6 +506,11 @@ def parse_source(f, print_source, opt, framepointer):
                     cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
                     changed_section = True
                     assert cur_section in SECTIONS, "unrecognized .section directive"
+                elif line.startswith('.late_rodata_alignment'):
+                    assert cur_section == '.late_rodata'
+                    late_rodata_alignment = int(line.split()[1])
+                    assert late_rodata_alignment in [4, 8]
+                    changed_section = True
                 elif line.startswith('.incbin'):
                     add_sized(int(line.split(',')[-1].strip(), 0))
                 elif line.startswith('.word') or line.startswith('.float'):
@@ -526,6 +544,7 @@ def parse_source(f, print_source, opt, framepointer):
                 cur_section = '.text'
                 asm_conts = []
                 late_rodata_asm_conts = []
+                late_rodata_alignment = 0
                 start_index = len(output_lines)
                 text_glabels = []
                 fn_section_sizes = {
@@ -587,7 +606,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 break
             loc = loc[1]
             prev_loc = prev_locs[sectype]
-            assert loc >= prev_loc
+            assert loc >= prev_loc, sectype
             if loc != prev_loc:
                 asm.append('.section ' + sectype)
                 if sectype == '.text':
