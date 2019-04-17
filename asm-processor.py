@@ -7,6 +7,8 @@ import sys
 import re
 import os
 
+MAX_FN_SIZE = 100
+
 EI_NIDENT     = 16
 EI_CLASS      = 4
 EI_DATA       = 5
@@ -337,6 +339,193 @@ class ElfFile:
 def is_temp_name(name):
     return name.startswith('_asmpp_')
 
+class GlobalState:
+    def __init__(self, min_instr_count, skip_instr_count):
+        # A value that hopefully never appears as a 32-bit rodata constant (or we
+        # miscompile late rodata). Increases by 1 in each step.
+        self.late_rodata_hex = 0xE0123456
+        self.namectr = 0
+        self.min_instr_count = min_instr_count
+        self.skip_instr_count = skip_instr_count
+
+    def make_name(self, cat):
+        self.namectr += 1
+        return '_asmpp_{}{}'.format(cat, self.namectr)
+
+class GlobalAsmBlock:
+    def __init__(self):
+        self.cur_section = '.text'
+        self.asm_conts = []
+        self.late_rodata_asm_conts = []
+        self.late_rodata_alignment = 0
+        self.text_glabels = []
+        self.fn_section_sizes = {
+            '.text': 0,
+            '.data': 0,
+            '.bss': 0,
+            '.rodata': 0,
+            '.late_rodata': 0,
+        }
+        self.fn_ins_inds = []
+        self.num_lines = 0
+
+    def add_sized(self, size, line):
+        if self.cur_section in ['.text', '.late_rodata']:
+            assert size % 4 == 0, "size must be a multiple of 4 on line: " + line
+        assert size >= 0
+        self.fn_section_sizes[self.cur_section] += size
+        if self.cur_section == '.text':
+            assert self.text_glabels, ".text block without an initial glabel"
+            self.fn_ins_inds.append((self.num_lines, size // 4))
+
+    def process_line(self, line):
+        line = re.sub(r'/\*.*?\*/', '', line)
+        line = re.sub(r'#.*', '', line)
+        line = line.strip()
+        changed_section = False
+        if line.startswith('glabel ') and self.cur_section == '.text':
+            self.text_glabels.append(line.split()[1])
+        if not line:
+            pass # empty line
+        elif line.startswith('glabel ') or (' ' not in line and line.endswith(':')):
+            pass # label
+        elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.bss', '.late_rodata']:
+            # section change
+            self.cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
+            assert self.cur_section in ['.data', '.text', '.rodata', '.late_rodata', '.bss'], \
+                    "unrecognized .section directive"
+            changed_section = True
+        elif line.startswith('.late_rodata_alignment'):
+            assert self.cur_section == '.late_rodata'
+            self.late_rodata_alignment = int(line.split()[1])
+            assert self.late_rodata_alignment in [4, 8]
+            changed_section = True
+        elif line.startswith('.incbin'):
+            self.add_sized(int(line.split(',')[-1].strip(), 0), line)
+        elif line.startswith('.word') or line.startswith('.float'):
+            self.add_sized(4 * len(line.split(',')), line)
+        elif line.startswith('.double'):
+            self.add_sized(8 * len(line.split(',')), line)
+        elif line.startswith('.space'):
+            self.add_sized(int(line.split()[1], 0), line)
+        elif line.startswith('.'):
+            # .macro, .ascii, .asciiz, .balign, .align, ...
+            assert False, 'not supported yet: ' + line
+        else:
+            # Unfortunately, macros are hard to support for .rodata --
+            # we don't know how how space they will expand to before
+            # running the assembler, but we need that information to
+            # construct the C code. So if we need that we'll either
+            # need to run the assembler twice (at least in some rare
+            # cases), or change how this program is invoked.
+            # Similarly, we can't currently deal with pseudo-instructions
+            # that expand to several real instructions.
+            assert self.cur_section == '.text', "instruction or macro call in non-.text section? not supported: " + line
+            self.add_sized(4, line)
+        if self.cur_section == '.late_rodata':
+            if not changed_section:
+                self.late_rodata_asm_conts.append(line)
+        else:
+            self.asm_conts.append(line)
+        self.num_lines += 1
+
+    def finish(self, state):
+        src = [''] * (self.num_lines + 1)
+        late_rodata = []
+        late_rodata_fn_output = []
+
+        if self.fn_section_sizes['.late_rodata'] > 0:
+            # Generate late rodata by emitting unique float constants.
+            # This requires 3 instructions for each 4 bytes of rodata.
+            # If we know alignment, we can use doubles, which give 3
+            # instructions for 8 bytes of rodata.
+            size = self.fn_section_sizes['.late_rodata'] // 4
+            skip_next = False
+            for i in range(size):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if (state.late_rodata_hex & 0xffff) == 0:
+                    # Avoid lui
+                    state.late_rodata_hex += 1
+                dummy_bytes = struct.pack('>I', state.late_rodata_hex)
+                state.late_rodata_hex += 1
+                late_rodata.append(dummy_bytes)
+                if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
+                    late_rodata.append(dummy_bytes)
+                    fval, = struct.unpack('>d', dummy_bytes * 2)
+                    late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
+                    skip_next = True
+                else:
+                    fval, = struct.unpack('>f', dummy_bytes)
+                    late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
+                late_rodata_fn_output.append('')
+                late_rodata_fn_output.append('')
+
+        text_name = None
+        if self.fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
+            text_name = state.make_name('func')
+            src[0] = 'void {}(void) {{'.format(text_name)
+            src[self.num_lines] = '}'
+            instr_count = self.fn_section_sizes['.text'] // 4
+            assert instr_count >= state.min_instr_count, "too short .text block"
+            tot_emitted = 0
+            tot_skipped = 0
+            fn_emitted = 0
+            fn_skipped = 0
+            rodata_stack = late_rodata_fn_output[::-1]
+            for (line, count) in self.fn_ins_inds:
+                for _ in range(count):
+                    if (fn_emitted > MAX_FN_SIZE and instr_count - tot_emitted > state.min_instr_count and
+                            (not rodata_stack or rodata_stack[-1])):
+                        # Don't let functions become too large. When a function reaches 284
+                        # instructions, and -O2 -framepointer flags are passed, the IRIX
+                        # compiler decides it is a great idea to start optimizing more.
+                        fn_emitted = 0
+                        fn_skipped = 0
+                        src[line] += ' }} void {}(void) {{ '.format(state.make_name('large_func'))
+                    if fn_skipped < state.skip_instr_count:
+                        fn_skipped += 1
+                        tot_skipped += 1
+                    elif rodata_stack:
+                        src[line] += rodata_stack.pop()
+                    else:
+                        src[line] += '*(volatile int*)0 = 0;'
+                    tot_emitted += 1
+                    fn_emitted += 1
+            if rodata_stack:
+                size = len(late_rodata_fn_output) // 3
+                available = instr_count - tot_skipped
+                print("late rodata to text ratio is too high: {} / {} must be <= 1/3"
+                        .format(size, available), file=sys.stderr)
+                print("add a .late_rodata_alignment (4|8) to the .late_rodata "
+                        "block to double the allowed ratio.", file=sys.stderr)
+                exit(1)
+
+        rodata_name = None
+        if self.fn_section_sizes['.rodata'] > 0:
+            rodata_name = state.make_name('rodata')
+            output_line += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'])
+
+        data_name = None
+        if self.fn_section_sizes['.data'] > 0:
+            data_name = state.make_name('data')
+            output_line += ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
+
+        bss_name = None
+        if self.fn_section_sizes['.bss'] > 0:
+            bss_name = state.make_name('bss')
+            output_line += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
+
+        fn = (self.text_glabels, self.asm_conts, late_rodata, self.late_rodata_asm_conts,
+        {
+            '.text': (text_name, self.fn_section_sizes['.text']),
+            '.data': (data_name, self.fn_section_sizes['.data']),
+            '.rodata': (rodata_name, self.fn_section_sizes['.rodata']),
+            '.bss': (bss_name, self.fn_section_sizes['.bss']),
+        })
+        return src, fn
+
 def parse_source(f, print_source, opt, framepointer):
     if opt == 'O2':
         if framepointer:
@@ -360,207 +549,37 @@ def parse_source(f, print_source, opt, framepointer):
         else:
             min_instr_count = 2
             skip_instr_count = 2
-    MAX_FN_SIZE = 100
-    SECTIONS = ['.data', '.text', '.rodata', '.late_rodata', '.bss']
 
-    in_asm = False
-    fn_section_sizes = None
-    fn_ins_inds = None
-    asm_conts = None
-    late_rodata_asm_conts = None
-    late_rodata_alignment = None
-    text_glabels = None
-    cur_section = None
-    start_index = None
+    state = GlobalState(min_instr_count, skip_instr_count)
+
+    global_asm = None
     asm_functions = []
     output_lines = []
-
-    # A value that hopefully never appears as a 32-bit rodata constant (or we
-    # miscompile late rodata). Increases by 1 in each step.
-    cur_late_rodata_hex = 0xE0123456
-
-    namectr = 0
-    def make_name(cat):
-        nonlocal namectr
-        namectr += 1
-        return '_asmpp_{}{}'.format(cat, namectr)
 
     for raw_line in f:
         raw_line = raw_line.rstrip()
         line = raw_line.lstrip()
-        output_line = ''
-
-        def add_sized(size):
-            if cur_section in ['.text', '.late_rodata']:
-                assert size % 4 == 0, "size must be a multiple of 4 on line: " + raw_line
-            assert size >= 0
-            fn_section_sizes[cur_section] += size
-            if cur_section == '.text':
-                assert text_glabels, ".text block without an initial glabel"
-                fn_ins_inds.append((len(output_lines), size // 4))
-
-        if in_asm:
-            if line.startswith(')'):
-                in_asm = False
-                late_rodata = []
-                late_rodata_fn_output = []
-                if fn_section_sizes['.late_rodata'] > 0:
-                    # Generate late rodata by emitting unique float constants.
-                    # This requires 3 instructions for each 4 bytes of rodata.
-                    # If we know alignment, we can use doubles, which give 3
-                    # instructions for 8 bytes of rodata.
-                    size = fn_section_sizes['.late_rodata'] // 4
-                    skip_next = False
-                    for i in range(size):
-                        if skip_next:
-                            skip_next = False
-                            continue
-                        if (cur_late_rodata_hex & 0xffff) == 0:
-                            # Avoid lui
-                            cur_late_rodata_hex += 1
-                        dummy_bytes = struct.pack('>I', cur_late_rodata_hex)
-                        cur_late_rodata_hex += 1
-                        late_rodata.append(dummy_bytes)
-                        if late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
-                            late_rodata.append(dummy_bytes)
-                            fval, = struct.unpack('>d', dummy_bytes * 2)
-                            late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
-                            skip_next = True
-                        else:
-                            fval, = struct.unpack('>f', dummy_bytes)
-                            late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
-                        late_rodata_fn_output.append('')
-                        late_rodata_fn_output.append('')
-                temp_fn_name = None
-                if fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
-                    temp_fn_name = make_name('func')
-                    output_lines[start_index] = 'void {}(void) {{'.format(temp_fn_name)
-                    instr_count = fn_section_sizes['.text'] // 4
-                    assert instr_count >= min_instr_count, "too short .text block"
-                    available_instr_count = 0
-                    tot_emitted = 0
-                    tot_skipped = 0
-                    fn_emitted = 0
-                    fn_skipped = 0
-                    rodata_stack = late_rodata_fn_output[::-1]
-                    for (line, count) in fn_ins_inds:
-                        for _ in range(count):
-                            if (fn_emitted > MAX_FN_SIZE and instr_count - tot_emitted > min_instr_count and
-                                    (not rodata_stack or rodata_stack[-1])):
-                                # Don't let functions become too large. When a function reaches 284
-                                # instructions, and -O2 -framepointer flags are passed, the IRIX
-                                # compiler decides it is a great idea to start optimizing more.
-                                fn_emitted = 0
-                                fn_skipped = 0
-                                output_lines[line] += ' }} void {}(void) {{ '.format(make_name('large_func'))
-                            if fn_skipped < skip_instr_count:
-                                fn_skipped += 1
-                                tot_skipped += 1
-                            elif rodata_stack:
-                                output_lines[line] += rodata_stack.pop()
-                            else:
-                                available_instr_count += 1
-                                output_lines[line] += '*(volatile int*)0 = 0;'
-                            tot_emitted += 1
-                            fn_emitted += 1
-                    if rodata_stack:
-                        size = len(late_rodata_fn_output) // 3
-                        available = instr_count - tot_skipped
-                        print("late rodata to text ratio is too high: {} / {} must be <= 1/3"
-                                .format(size, available), file=sys.stderr)
-                        print("add a .late_rodata_alignment (4|8) to the .late_rodata "
-                                "block to double the allowed ratio.", file=sys.stderr)
-                        exit(1)
-                    output_line = '}'
-                rodata_name = None
-                if fn_section_sizes['.rodata'] > 0:
-                    rodata_name = make_name('rodata')
-                    output_line += ' const char {}[{}] = {{1}};'.format(rodata_name, fn_section_sizes['.rodata'])
-                data_name = None
-                if fn_section_sizes['.data'] > 0:
-                    data_name = make_name('data')
-                    output_line += ' char {}[{}] = {{1}};'.format(data_name, fn_section_sizes['.data'])
-                bss_name = None
-                if fn_section_sizes['.bss'] > 0:
-                    bss_name = make_name('bss')
-                    output_line += ' char {}[{}];'.format(bss_name, fn_section_sizes['.bss'])
-                asm_functions.append((text_glabels, asm_conts, late_rodata, late_rodata_asm_conts, {
-                    '.text': (temp_fn_name, fn_section_sizes['.text']),
-                    '.data': (data_name, fn_section_sizes['.data']),
-                    '.rodata': (rodata_name, fn_section_sizes['.rodata']),
-                    '.bss': (bss_name, fn_section_sizes['.bss']),
-                }))
-            else:
-                line = re.sub(r'/\*.*?\*/', '', line)
-                line = re.sub(r'#.*', '', line)
-                line = line.strip()
-                changed_section = False
-                if line.startswith('glabel ') and cur_section == '.text':
-                    text_glabels.append(line.split()[1])
-                if not line:
-                    pass # empty line
-                elif line.startswith('glabel ') or (' ' not in line and line.endswith(':')):
-                    pass # label
-                elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.bss', '.late_rodata']:
-                    # section change
-                    cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
-                    changed_section = True
-                    assert cur_section in SECTIONS, "unrecognized .section directive"
-                elif line.startswith('.late_rodata_alignment'):
-                    assert cur_section == '.late_rodata'
-                    late_rodata_alignment = int(line.split()[1])
-                    assert late_rodata_alignment in [4, 8]
-                    changed_section = True
-                elif line.startswith('.incbin'):
-                    add_sized(int(line.split(',')[-1].strip(), 0))
-                elif line.startswith('.word') or line.startswith('.float'):
-                    add_sized(4 * len(line.split(',')))
-                elif line.startswith('.double'):
-                    add_sized(8 * len(line.split(',')))
-                elif line.startswith('.space'):
-                    add_sized(int(line.split()[1], 0))
-                elif line.startswith('.'):
-                    # .macro, .ascii, .asciiz, .balign, .align, ...
-                    assert False, 'not supported yet: ' + line
-                else:
-                    # Unfortunately, macros are hard to support for .rodata --
-                    # we don't know how how space they will expand to before
-                    # running the assembler, but we need that information to
-                    # construct the C code. So if we need that we'll either
-                    # need to run the assembler twice (at least in some rare
-                    # cases), or change how this program is invoked.
-                    # Similarly, we can't currently deal with pseudo-instructions
-                    # that expand to several real instructions.
-                    assert cur_section == '.text', "instruction or macro call in non-.text section? not supported: " + line
-                    add_sized(4)
-                if cur_section == '.late_rodata':
-                    if not changed_section:
-                        late_rodata_asm_conts.append(line)
-                else:
-                    asm_conts.append(line)
-        else:
-            if line.startswith('GLOBAL_ASM('):
-                in_asm = True
-                cur_section = '.text'
-                asm_conts = []
-                late_rodata_asm_conts = []
-                late_rodata_alignment = 0
-                start_index = len(output_lines)
-                text_glabels = []
-                fn_section_sizes = {
-                    '.text': 0,
-                    '.data': 0,
-                    '.bss': 0,
-                    '.rodata': 0,
-                    '.late_rodata': 0,
-                }
-                fn_ins_inds = []
-            else:
-                output_line = raw_line
 
         # Print exactly one output line per source line, to make compiler
-        # errors have correct line numbers.
-        output_lines.append(output_line)
+        # errors have correct line numbers. These will be overridden with
+        # reasonable content further down.
+        output_lines.append('')
+
+        if global_asm is not None:
+            if line.startswith(')'):
+                src, fn = global_asm.finish(state)
+                for i, line2 in enumerate(src):
+                    output_lines[start_index + i] = line2
+                asm_functions.append(fn)
+                global_asm = None
+            else:
+                global_asm.process_line(line)
+        else:
+            if line.startswith('GLOBAL_ASM('):
+                global_asm = GlobalAsmBlock()
+                start_index = len(output_lines)
+            else:
+                output_lines[-1] = raw_line
 
     if print_source:
         for line in output_lines:
