@@ -4,7 +4,7 @@ Pre-process .c files and post-process .o files to enable embedding MIPS assembly
 
 This can be useful for decompilation, as it allows:
 
- * postponing harder (e.g. `-O2`-compiled) functions
+ * postponing harder functions
  * getting byte-exact matches for partially decompiled files
  * decompiling functions in the middle of files
 
@@ -43,13 +43,17 @@ nop
 
 To compile the file, run `./compile.sh file.c`, or invoke the `asm-processor.py` script in a similar manner. (`compile.sh` is mostly just intended to describe example usage.)
 
+Reading assembly from file is also supported, e.g. `GLOBAL_ASM("file.s")`.
+
 ### What is supported?
 
 `.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, and `-g` and `-O2` flags to the IRIX compiler.
 
 ### What is not supported?
 
-complicated assembly (.ifdef, macro declarations/calls other than `glabel`, pseudo-instructions that expand to several real instructions), too large `.late_rodata`/`.text` ratios within a block.
+* complicated assembly (.ifdef, macro declarations/calls other than `glabel`, pseudo-instructions that expand to several real instructions)
+* too large `.late_rodata`/`.text` ratios within a block (#1)
+* `-mips1` (`-mips3` may also not work fully)
 
 C `#ifdef`s only work outside of `GLOBAL_ASM` calls, but is otherwise able to replace `.ifdef`.
 
