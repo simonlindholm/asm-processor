@@ -505,17 +505,17 @@ class GlobalAsmBlock:
         rodata_name = None
         if self.fn_section_sizes['.rodata'] > 0:
             rodata_name = state.make_name('rodata')
-            output_line += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'])
+            src[self.num_lines] += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'])
 
         data_name = None
         if self.fn_section_sizes['.data'] > 0:
             data_name = state.make_name('data')
-            output_line += ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
+            src[self.num_lines] += ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
 
         bss_name = None
         if self.fn_section_sizes['.bss'] > 0:
             bss_name = state.make_name('bss')
-            output_line += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
+            src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
 
         fn = (self.text_glabels, self.asm_conts, late_rodata, self.late_rodata_asm_conts,
         {
