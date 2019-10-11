@@ -339,6 +339,47 @@ class ElfFile:
 def is_temp_name(name):
     return name.startswith('_asmpp_')
 
+
+def count_quoted_size(line, z):
+    in_quote = False
+    num_parts = 0
+    ret = 0
+    i = 0
+    digits = "0123456789" # 0-7 would be more sane, but this matches GNU as
+    while i < len(line):
+        c = line[i]
+        i += 1
+        if not in_quote:
+            if c == '"':
+                in_quote = True
+                num_parts += 1
+        else:
+            if c == '"':
+                in_quote = False
+                continue
+            ret += 1
+            if c != '\\':
+                continue
+            assert i < len(line), "Backslash at end of line not supported"
+            c = line[i]
+            i += 1
+            # (if c is in "bfnrtv", we have a real escaped literal)
+            if c == 'x':
+                # hex literal, consume any number of hex chars, possibly none
+                while i < len(line) and line[i] in digits + "abcdefABCDEF":
+                    i += 1
+            elif c in digits:
+                # octal literal, consume up to two more digits
+                it = 0
+                while i < len(line) and line[i] in digits and it < 2:
+                    i += 1
+                    it += 1
+
+    assert not in_quote, "Unterminated string literal"
+    assert num_parts > 0
+    return ret + num_parts if z else ret
+
+
 class GlobalState:
     def __init__(self, min_instr_count, skip_instr_count):
         # A value that hopefully never appears as a 32-bit rodata constant (or we
@@ -368,6 +409,10 @@ class GlobalAsmBlock:
         }
         self.fn_ins_inds = []
         self.num_lines = 0
+
+    def align4(self):
+        while self.fn_section_sizes[self.cur_section] % 4 != 0:
+            self.fn_section_sizes[self.cur_section] += 1
 
     def add_sized(self, size, line):
         if self.cur_section in ['.text', '.late_rodata']:
@@ -403,13 +448,22 @@ class GlobalAsmBlock:
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), line)
         elif line.startswith('.word') or line.startswith('.float'):
+            self.align4()
             self.add_sized(4 * len(line.split(',')), line)
         elif line.startswith('.double'):
+            self.align4()
             self.add_sized(8 * len(line.split(',')), line)
         elif line.startswith('.space'):
             self.add_sized(int(line.split()[1], 0), line)
+        elif line.startswith('.balign') or line.startswith('.align'):
+            align = int(line.split()[1])
+            assert align == 4, "only .balign 4 is supported"
+            self.align4()
+        elif line.startswith('.asci'):
+            z = (line.startswith('.asciz') or line.startswith('.asciiz'))
+            self.add_sized(count_quoted_size(line, z), line)
         elif line.startswith('.'):
-            # .macro, .ascii, .asciiz, .balign, .align, ...
+            # .macro, ...
             assert False, 'not supported yet: ' + line
         else:
             # Unfortunately, macros are hard to support for .rodata --
@@ -575,7 +629,7 @@ def parse_source(f, print_source, opt, framepointer):
             else:
                 global_asm.process_line(line)
         else:
-            if line == in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
+            if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
                 global_asm = GlobalAsmBlock()
                 start_index = len(output_lines)
             elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))

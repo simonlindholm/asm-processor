@@ -47,7 +47,7 @@ Reading assembly from file is also supported, e.g. `GLOBAL_ASM("file.s")`.
 
 ### What is supported?
 
-`.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, and `-g` and `-O2` flags to the IRIX compiler.
+`.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, `.ascii`/`.asciz`, and `-g` and `-O2` flags to the IRIX compiler.
 
 ### What is not supported?
 

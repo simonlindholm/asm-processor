@@ -24,7 +24,7 @@ glabel a
     nop
 )
 
-float foo() { "foo"; return 1.1f; }
+float foo(void) { "foo"; return 1.1f; }
 
 GLOBAL_ASM(
 .late_rodata
@@ -50,7 +50,7 @@ glabel b
     nop
 )
 
-float bar() { "bar"; return 1.2f; }
+float bar(void) { "bar"; return 1.2f; }
 
 GLOBAL_ASM(
 .late_rodata
