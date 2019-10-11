@@ -575,12 +575,13 @@ def parse_source(f, print_source, opt, framepointer):
             else:
                 global_asm.process_line(line)
         else:
-            if line == 'GLOBAL_ASM(':
+            if line == in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
                 global_asm = GlobalAsmBlock()
                 start_index = len(output_lines)
-            elif line.startswith('GLOBAL_ASM("') and line.endswith('")'):
+            elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
+                    and line.endswith('")')):
                 global_asm = GlobalAsmBlock()
-                fname = line[len('GLOBAL_ASM') + 2 : -2]
+                fname = line[line.index('(') + 2 : -2]
                 with open(fname) as f:
                     for line2 in f:
                         global_asm.process_line(line2)
