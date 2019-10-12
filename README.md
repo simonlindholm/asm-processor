@@ -62,3 +62,7 @@ C `#ifdef`s only work outside of `GLOBAL_ASM` calls, but is otherwise able to re
 The IRIX compiler emits rodata in two passes: first array/string contents, then large literals/switch jump tables.
 
 Data declared within `.rdata`/`.section .rodata` will end up in the first half, and `.late_rodata`/`.section .late_rodata` in the second half.
+
+### Testing
+
+There are a few tests to ensure you don't break anything when hacking on asm-processor: `./run-tests.sh` should exit without output if they pass, or else output a diff from previous to new version.
