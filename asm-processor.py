@@ -905,11 +905,11 @@ def main():
         opt = 'g3'
 
     if args.objfile is None:
-        with open(args.filename) as f:
+        with open(args.filename, encoding="ascii", errors="ignore") as f:
             parse_source(f, print_source=True, opt=opt, framepointer=args.framepointer)
     else:
         assert args.assembler is not None, "must pass assembler command"
-        with open(args.filename) as f:
+        with open(args.filename, encoding="ascii", errors="ignore") as f:
             functions = parse_source(f, print_source=False, opt=opt, framepointer=args.framepointer)
         if not functions:
             return
