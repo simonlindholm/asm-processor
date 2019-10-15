@@ -228,6 +228,12 @@ class Section:
                 return (s.st_shndx, s.st_value)
         return None
 
+    def find_symbol_in_section(self, name, section):
+        pos = self.find_symbol(name)
+        assert pos is not None
+        assert pos[0] == section.index
+        return pos[1]
+
     def init_symbols(self, sections):
         assert self.sh_type == SHT_SYMTAB
         assert self.sh_entsize == 16
@@ -340,44 +346,12 @@ def is_temp_name(name):
     return name.startswith('_asmpp_')
 
 
-def count_quoted_size(line, z):
-    in_quote = False
-    num_parts = 0
-    ret = 0
-    i = 0
-    digits = "0123456789" # 0-7 would be more sane, but this matches GNU as
-    while i < len(line):
-        c = line[i]
-        i += 1
-        if not in_quote:
-            if c == '"':
-                in_quote = True
-                num_parts += 1
-        else:
-            if c == '"':
-                in_quote = False
-                continue
-            ret += 1
-            if c != '\\':
-                continue
-            assert i < len(line), "Backslash at end of line not supported"
-            c = line[i]
-            i += 1
-            # (if c is in "bfnrtv", we have a real escaped literal)
-            if c == 'x':
-                # hex literal, consume any number of hex chars, possibly none
-                while i < len(line) and line[i] in digits + "abcdefABCDEF":
-                    i += 1
-            elif c in digits:
-                # octal literal, consume up to two more digits
-                it = 0
-                while i < len(line) and line[i] in digits and it < 2:
-                    i += 1
-                    it += 1
+class Failure(Exception):
+    def __init__(self, message):
+        self.message = message
 
-    assert not in_quote, "Unterminated string literal"
-    assert num_parts > 0
-    return ret + num_parts if z else ret
+    def __str__(self):
+        return self.message
 
 
 class GlobalState:
@@ -393,8 +367,10 @@ class GlobalState:
         self.namectr += 1
         return '_asmpp_{}{}'.format(cat, self.namectr)
 
+
 class GlobalAsmBlock:
-    def __init__(self):
+    def __init__(self, fn_desc):
+        self.fn_desc = fn_desc
         self.cur_section = '.text'
         self.asm_conts = []
         self.late_rodata_asm_conts = []
@@ -410,17 +386,69 @@ class GlobalAsmBlock:
         self.fn_ins_inds = []
         self.num_lines = 0
 
+    def fail(self, message, line=None):
+        context = self.fn_desc
+        if line:
+            context += ", at line \"" + line + "\""
+        raise Failure(message + "\nwithin " + context)
+
+    def count_quoted_size(self, line, z):
+        in_quote = False
+        num_parts = 0
+        ret = 0
+        i = 0
+        digits = "0123456789" # 0-7 would be more sane, but this matches GNU as
+        while i < len(line):
+            c = line[i]
+            i += 1
+            if not in_quote:
+                if c == '"':
+                    in_quote = True
+                    num_parts += 1
+            else:
+                if c == '"':
+                    in_quote = False
+                    continue
+                ret += 1
+                if c != '\\':
+                    continue
+                if i == len(line):
+                    self.fail("backslash at end of line not supported", line)
+                c = line[i]
+                i += 1
+                # (if c is in "bfnrtv", we have a real escaped literal)
+                if c == 'x':
+                    # hex literal, consume any number of hex chars, possibly none
+                    while i < len(line) and line[i] in digits + "abcdefABCDEF":
+                        i += 1
+                elif c in digits:
+                    # octal literal, consume up to two more digits
+                    it = 0
+                    while i < len(line) and line[i] in digits and it < 2:
+                        i += 1
+                        it += 1
+
+        if in_quote:
+            self.fail("unterminated string literal", line)
+        if num_parts == 0:
+            self.fail(".ascii with no string", line)
+        return ret + num_parts if z else ret
+
+
     def align4(self):
         while self.fn_section_sizes[self.cur_section] % 4 != 0:
             self.fn_section_sizes[self.cur_section] += 1
 
     def add_sized(self, size, line):
         if self.cur_section in ['.text', '.late_rodata']:
-            assert size % 4 == 0, "size must be a multiple of 4 on line: " + line
-        assert size >= 0
+            if size % 4 != 0:
+                self.fail("size must be a multiple of 4", line)
+        if size < 0:
+            self.fail("size cannot be negative", line)
         self.fn_section_sizes[self.cur_section] += size
         if self.cur_section == '.text':
-            assert self.text_glabels, ".text block without an initial glabel"
+            if not self.text_glabels:
+                self.fail(".text block without an initial glabel", line)
             self.fn_ins_inds.append((self.num_lines, size // 4))
 
     def process_line(self, line):
@@ -437,13 +465,15 @@ class GlobalAsmBlock:
         elif line.startswith('.section') or line in ['.text', '.data', '.rdata', '.rodata', '.bss', '.late_rodata']:
             # section change
             self.cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
-            assert self.cur_section in ['.data', '.text', '.rodata', '.late_rodata', '.bss'], \
-                    "unrecognized .section directive"
+            if self.cur_section not in ['.data', '.text', '.rodata', '.late_rodata', '.bss']:
+                self.fail("unrecognized .section directive", line)
             changed_section = True
         elif line.startswith('.late_rodata_alignment'):
-            assert self.cur_section == '.late_rodata'
+            if self.cur_section != '.late_rodata':
+                self.fail(".late_rodata_alignment must occur within .late_rodata section")
             self.late_rodata_alignment = int(line.split()[1])
-            assert self.late_rodata_alignment in [4, 8]
+            if self.late_rodata_alignment not in [4, 8]:
+                self.fail(".late_rodata_alignment argument must be 4 or 8", line)
             changed_section = True
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), line)
@@ -457,14 +487,15 @@ class GlobalAsmBlock:
             self.add_sized(int(line.split()[1], 0), line)
         elif line.startswith('.balign') or line.startswith('.align'):
             align = int(line.split()[1])
-            assert align == 4, "only .balign 4 is supported"
+            if align != 4:
+                self.fail("only .balign 4 is supported", line)
             self.align4()
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
-            self.add_sized(count_quoted_size(line, z), line)
+            self.add_sized(self.count_quoted_size(line, z), line)
         elif line.startswith('.'):
             # .macro, ...
-            assert False, 'not supported yet: ' + line
+            self.fail("asm directive not supported", line)
         else:
             # Unfortunately, macros are hard to support for .rodata --
             # we don't know how how space they will expand to before
@@ -474,7 +505,8 @@ class GlobalAsmBlock:
             # cases), or change how this program is invoked.
             # Similarly, we can't currently deal with pseudo-instructions
             # that expand to several real instructions.
-            assert self.cur_section == '.text', "instruction or macro call in non-.text section? not supported: " + line
+            if self.cur_section != '.text':
+                self.fail("instruction or macro call in non-.text section? not supported", line)
             self.add_sized(4, line)
         if self.cur_section == '.late_rodata':
             if not changed_section:
@@ -522,7 +554,8 @@ class GlobalAsmBlock:
             src[0] = 'void {}(void) {{'.format(text_name)
             src[self.num_lines] = '}'
             instr_count = self.fn_section_sizes['.text'] // 4
-            assert instr_count >= state.min_instr_count, "too short .text block"
+            if instr_count < state.min_instr_count:
+                self.fail("too short .text block")
             tot_emitted = 0
             tot_skipped = 0
             fn_emitted = 0
@@ -550,11 +583,11 @@ class GlobalAsmBlock:
             if rodata_stack:
                 size = len(late_rodata_fn_output) // 3
                 available = instr_count - tot_skipped
-                print("late rodata to text ratio is too high: {} / {} must be <= 1/3"
-                        .format(size, available), file=sys.stderr)
-                print("add a .late_rodata_alignment (4|8) to the .late_rodata "
-                        "block to double the allowed ratio.", file=sys.stderr)
-                exit(1)
+                self.fail(
+                    "late rodata to text ratio is too high: {} / {} must be <= 1/3\n"
+                    "add .late_rodata_alignment (4|8) to the .late_rodata "
+                    "block to double the allowed ratio."
+                        .format(size, available))
 
         rodata_name = None
         if self.fn_section_sizes['.rodata'] > 0:
@@ -571,7 +604,7 @@ class GlobalAsmBlock:
             bss_name = state.make_name('bss')
             src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
 
-        fn = (self.text_glabels, self.asm_conts, late_rodata, self.late_rodata_asm_conts,
+        fn = (self.text_glabels, self.asm_conts, late_rodata, self.late_rodata_asm_conts, self.fn_desc,
         {
             '.text': (text_name, self.fn_section_sizes['.text']),
             '.data': (data_name, self.fn_section_sizes['.data']),
@@ -596,7 +629,8 @@ def parse_source(f, print_source, opt, framepointer):
             min_instr_count = 4
             skip_instr_count = 4
     else:
-        assert opt == 'g3'
+        if opt != 'g3':
+            raise Failure("must pass one of -g, -O2, -O2 -g3")
         if framepointer:
             min_instr_count = 4
             skip_instr_count = 4
@@ -610,7 +644,7 @@ def parse_source(f, print_source, opt, framepointer):
     asm_functions = []
     output_lines = []
 
-    for raw_line in f:
+    for line_no, raw_line in enumerate(f, 1):
         raw_line = raw_line.rstrip()
         line = raw_line.lstrip()
 
@@ -630,12 +664,12 @@ def parse_source(f, print_source, opt, framepointer):
                 global_asm.process_line(line)
         else:
             if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
-                global_asm = GlobalAsmBlock()
+                global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
                 start_index = len(output_lines)
             elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
                     and line.endswith('")')):
-                global_asm = GlobalAsmBlock()
                 fname = line[line.index('(') + 2 : -2]
+                global_asm = GlobalAsmBlock(fname)
                 with open(fname) as f:
                     for line2 in f:
                         global_asm.process_line(line2)
@@ -668,17 +702,19 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         '.text': [],
         '.data': [],
         '.rodata': [],
+        '.bss': [],
     }
     asm = []
     late_rodata = []
     late_rodata_asm = []
-    late_rodata_source_name = None
+    late_rodata_source_name_start = None
+    late_rodata_source_name_end = None
 
     # Generate an assembly file with all the assembly we need to fill in. For
     # simplicity we pad with nops/.space so that addresses match exactly, so we
     # don't have to fix up relocations/symbol references.
     all_text_glabels = set()
-    for (text_glabels, body, fn_late_rodata, fn_late_rodata_body, data) in functions:
+    for (text_glabels, body, fn_late_rodata, fn_late_rodata_body, fn_desc, data) in functions:
         ifdefed = False
         for sectype, (temp_name, size) in data.items():
             if temp_name is None:
@@ -698,21 +734,30 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                         asm.append('nop')
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
-            if sectype != '.bss':
-                to_copy[sectype].append((loc, size))
+            to_copy[sectype].append((loc, size, temp_name, fn_desc))
             prev_locs[sectype] = loc + size
         if not ifdefed:
             all_text_glabels.update(text_glabels)
             late_rodata.extend(fn_late_rodata)
             late_rodata_asm.extend(fn_late_rodata_body)
+            for sectype, (temp_name, size) in data.items():
+                if temp_name is not None:
+                    asm.append('.section ' + sectype)
+                    asm.append('glabel ' + temp_name + '_asm_start')
             asm.append('.text')
             for line in body:
                 asm.append(line)
+            for sectype, (temp_name, size) in data.items():
+                if temp_name is not None:
+                    asm.append('.section ' + sectype)
+                    asm.append('glabel ' + temp_name + '_asm_end')
     if late_rodata_asm:
-        late_rodata_source_name = '_asmpp_late_rodata'
+        late_rodata_source_name_start = '_asmpp_late_rodata_start'
+        late_rodata_source_name_end = '_asmpp_late_rodata_end'
         asm.append('.rdata')
-        asm.append('glabel {}'.format(late_rodata_source_name))
+        asm.append('glabel {}'.format(late_rodata_source_name_start))
         asm.extend(late_rodata_asm)
+        asm.append('glabel {}'.format(late_rodata_source_name_end))
 
     o_file = tempfile.NamedTemporaryFile(prefix='asm-processor', suffix='.o', delete=False)
     o_name = o_file.name
@@ -726,7 +771,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         s_file.close()
         ret = os.system(assembler + " " + s_name + " -o " + o_name)
         if ret != 0:
-            raise Exception("failed to assemble")
+            raise Failure("failed to assemble")
         with open(o_name, 'rb') as f:
             asm_objfile = ElfFile(f.read())
 
@@ -745,15 +790,22 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         modified_text_positions = set()
         last_rodata_pos = 0
         for sectype in SECTIONS:
-            if sectype == '.bss':
+            if not to_copy[sectype]:
                 continue
             source = asm_objfile.find_section(sectype)
-            target = objfile.find_section(sectype)
-            if source is None or not to_copy[sectype]:
+            assert source is not None, "didn't find source section: " + sectype
+            for (pos, count, temp_name, fn_desc) in to_copy[sectype]:
+                loc1 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_start', source)
+                loc2 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_end', source)
+                assert loc1 == pos, "assembly and C files don't line up for section " + sectype + ", " + fn_desc
+                if loc2 - loc1 != count:
+                    raise Failure("incorrectly computed size for section " + sectype + ", " + fn_desc + ". If using .double, make sure to provide explicit alignment padding.")
+            if sectype == '.bss':
                 continue
-            assert target is not None, "must have a section to overwrite: " + sectype
+            target = objfile.find_section(sectype)
+            assert target is not None, "missing target section of type " + sectype
             data = list(target.data)
-            for (pos, count) in to_copy[sectype]:
+            for (pos, count, _, _) in to_copy[sectype]:
                 data[pos:pos + count] = source.data[pos:pos + count]
                 if sectype == '.text':
                     assert count % 4 == 0
@@ -770,9 +822,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
         if late_rodata:
             source = asm_objfile.find_section('.rodata')
             target = objfile.find_section('.rodata')
-            source_pos = asm_objfile.symtab.find_symbol(late_rodata_source_name)
-            assert source_pos is not None and source_pos[0] == source.index
-            source_pos = source_pos[1]
+            source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
+            source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
+            if source_end - source_pos != len(late_rodata) * 4:
+                raise Failure("computed wrong size of .late_rodata. If using .double, make sure to provide explicit alignment padding.")
             new_data = list(target.data)
             for dummy_bytes in late_rodata:
                 pos = target.data.index(dummy_bytes, last_rodata_pos)
@@ -812,7 +865,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
                 continue
             if s.st_shndx not in [SHN_UNDEF, SHN_ABS]:
                 section_name = asm_objfile.sections[s.st_shndx].name
-                assert section_name in SECTIONS, "Generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found {}".format(section_name)
+                if section_name not in SECTIONS:
+                    raise Failure("generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found " + section_name)
                 s.st_shndx = objfile.find_section(section_name).index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
@@ -900,15 +954,15 @@ def main():
     opt = 'O2' if args.o2 else 'g'
     if args.g3:
         if opt != 'O2':
-            print("-g3 is only supported together with -O2", file=sys.stderr)
-            exit(1)
+            raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
 
     if args.objfile is None:
         with open(args.filename, encoding="ascii", errors="ignore") as f:
             parse_source(f, print_source=True, opt=opt, framepointer=args.framepointer)
     else:
-        assert args.assembler is not None, "must pass assembler command"
+        if args.assembler is None:
+            raise Failure("must pass assembler command")
         with open(args.filename, encoding="ascii", errors="ignore") as f:
             functions = parse_source(f, print_source=False, opt=opt, framepointer=args.framepointer)
         if not functions:
@@ -920,4 +974,8 @@ def main():
         fixup_objfile(args.objfile, functions, asm_prelude, args.assembler)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Failure as e:
+        print("Error:", e, file=sys.stderr)
+        sys.exit(1)
