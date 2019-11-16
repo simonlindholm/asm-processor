@@ -614,7 +614,7 @@ class GlobalAsmBlock:
         return src, fn
 
 def parse_source(f, print_source, opt, framepointer):
-    if opt == 'O2':
+    if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
             skip_instr_count = 5
@@ -630,7 +630,7 @@ def parse_source(f, print_source, opt, framepointer):
             skip_instr_count = 4
     else:
         if opt != 'g3':
-            raise Failure("must pass one of -g, -O2, -O2 -g3")
+            raise Failure("must pass one of -g, -O1, -O2, -O2 -g3")
         if framepointer:
             min_instr_count = 4
             skip_instr_count = 4
@@ -948,10 +948,11 @@ def main():
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('-O2', dest='o2', action='store_true')
-    group.add_argument('-g', dest='o2', action='store_false')
+    group.add_argument('-O1', dest='opt', action='store_const', const='O1')
+    group.add_argument('-O2', dest='opt', action='store_const', const='O2')
+    group.add_argument('-g', dest='opt', action='store_const', const='g')
     args = parser.parse_args()
-    opt = 'O2' if args.o2 else 'g'
+    opt = args.opt
     if args.g3:
         if opt != 'O2':
             raise Failure("-g3 is only supported together with -O2")
