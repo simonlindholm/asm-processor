@@ -197,12 +197,12 @@ class Section:
         assert self.sh_type == SHT_STRTAB
         to = self.data.find(b'\0', index)
         assert to != -1
-        return self.data[index:to].decode('utf-8')
+        return self.data[index:to].decode('latin1')
 
     def add_str(self, string):
         assert self.sh_type == SHT_STRTAB
         ret = len(self.data)
-        self.data += bytes(string, 'utf-8') + b'\0'
+        self.data += bytes(string, 'latin1') + b'\0'
         return ret
 
     def is_rel(self):
@@ -670,7 +670,7 @@ def parse_source(f, print_source, opt, framepointer):
                     and line.endswith('")')):
                 fname = line[line.index('(') + 2 : -2]
                 global_asm = GlobalAsmBlock(fname)
-                with open(fname) as f:
+                with open(fname, encoding='latin1') as f:
                     for line2 in f:
                         global_asm.process_line(line2)
                 src, fn = global_asm.finish(state)
@@ -682,7 +682,7 @@ def parse_source(f, print_source, opt, framepointer):
 
     if print_source:
         for line in output_lines:
-            print(line)
+            sys.stdout.buffer.write(line.encode('latin1') + b'\n')
 
     return asm_functions
 
@@ -767,7 +767,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     try:
         s_file.write(asm_prelude + b'\n')
         for line in asm:
-            s_file.write(line.encode('utf-8') + b'\n')
+            s_file.write(line.encode('latin1') + b'\n')
         s_file.close()
         ret = os.system(assembler + " " + s_name + " -o " + o_name)
         if ret != 0:
@@ -959,12 +959,12 @@ def main():
         opt = 'g3'
 
     if args.objfile is None:
-        with open(args.filename, encoding="ascii", errors="ignore") as f:
+        with open(args.filename, encoding="latin1") as f:
             parse_source(f, print_source=True, opt=opt, framepointer=args.framepointer)
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
-        with open(args.filename, encoding="ascii", errors="ignore") as f:
+        with open(args.filename, encoding="latin1") as f:
             functions = parse_source(f, print_source=False, opt=opt, framepointer=args.framepointer)
         if not functions:
             return
