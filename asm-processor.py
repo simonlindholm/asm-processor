@@ -202,7 +202,7 @@ class Section:
     def add_str(self, string):
         assert self.sh_type == SHT_STRTAB
         ret = len(self.data)
-        self.data += bytes(string, 'latin1') + b'\0'
+        self.data += string.encode('latin1') + b'\0'
         return ret
 
     def is_rel(self):
@@ -613,7 +613,7 @@ class GlobalAsmBlock:
         })
         return src, fn
 
-def parse_source(f, print_source, opt, framepointer):
+def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=False):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -670,7 +670,7 @@ def parse_source(f, print_source, opt, framepointer):
                     and line.endswith('")')):
                 fname = line[line.index('(') + 2 : -2]
                 global_asm = GlobalAsmBlock(fname)
-                with open(fname, encoding='latin1') as f:
+                with open(fname, encoding=input_enc) as f:
                     for line2 in f:
                         global_asm.process_line(line2)
                 src, fn = global_asm.finish(state)
@@ -682,11 +682,11 @@ def parse_source(f, print_source, opt, framepointer):
 
     if print_source:
         for line in output_lines:
-            sys.stdout.buffer.write(line.encode('latin1') + b'\n')
+            sys.stdout.buffer.write(line.encode(output_enc) + b'\n')
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -767,7 +767,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler):
     try:
         s_file.write(asm_prelude + b'\n')
         for line in asm:
-            s_file.write(line.encode('latin1') + b'\n')
+            s_file.write(line.encode(output_enc) + b'\n')
         s_file.close()
         ret = os.system(assembler + " " + s_name + " -o " + o_name)
         if ret != 0:
@@ -945,6 +945,8 @@ def main():
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
+    parser.add_argument('--input-enc', default='latin1', help="Input encoding (default: latin1)")
+    parser.add_argument('--output-enc', default='latin1', help="Output encoding (default: latin1)")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
@@ -959,20 +961,20 @@ def main():
         opt = 'g3'
 
     if args.objfile is None:
-        with open(args.filename, encoding="latin1") as f:
-            parse_source(f, print_source=True, opt=opt, framepointer=args.framepointer)
+        with open(args.filename, encoding=args.input_enc) as f:
+            parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=True)
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
-        with open(args.filename, encoding="latin1") as f:
-            functions = parse_source(f, print_source=False, opt=opt, framepointer=args.framepointer)
+        with open(args.filename, encoding=args.input_enc) as f:
+            functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc)
         if not functions:
             return
         asm_prelude = b''
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc)
 
 if __name__ == "__main__":
     try:
