@@ -384,6 +384,7 @@ class GlobalAsmBlock:
             '.late_rodata': 0,
         }
         self.fn_ins_inds = []
+        self.glued_line = ''
         self.num_lines = 0
 
     def fail(self, message, line=None):
@@ -449,9 +450,16 @@ class GlobalAsmBlock:
         if self.cur_section == '.text':
             if not self.text_glabels:
                 self.fail(".text block without an initial glabel", line)
-            self.fn_ins_inds.append((self.num_lines, size // 4))
+            self.fn_ins_inds.append((self.num_lines - 1, size // 4))
 
     def process_line(self, line):
+        self.num_lines += 1
+        if line.endswith('\\'):
+            self.glued_line += line[:-1]
+            return
+        line = self.glued_line + line
+        self.glued_line = ''
+
         line = re.sub(r'/\*.*?\*/', '', line)
         line = re.sub(r'#.*', '', line)
         line = line.strip()
@@ -513,7 +521,6 @@ class GlobalAsmBlock:
                 self.late_rodata_asm_conts.append(line)
         else:
             self.asm_conts.append(line)
-        self.num_lines += 1
 
     def finish(self, state):
         src = [''] * (self.num_lines + 1)
