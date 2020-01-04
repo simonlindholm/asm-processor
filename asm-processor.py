@@ -460,9 +460,11 @@ class GlobalAsmBlock:
         line = self.glued_line + line
         self.glued_line = ''
 
+        real_line = line
         line = re.sub(r'/\*.*?\*/', '', line)
         line = re.sub(r'#.*', '', line)
         line = line.strip()
+        line = re.sub(r'^[a-zA-Z0-9_]+:\s*', '', line)
         changed_section = False
         if line.startswith('glabel ') and self.cur_section == '.text':
             self.text_glabels.append(line.split()[1])
@@ -474,36 +476,36 @@ class GlobalAsmBlock:
             # section change
             self.cur_section = '.rodata' if line == '.rdata' else line.split(',')[0].split()[-1]
             if self.cur_section not in ['.data', '.text', '.rodata', '.late_rodata', '.bss']:
-                self.fail("unrecognized .section directive", line)
+                self.fail("unrecognized .section directive", real_line)
             changed_section = True
         elif line.startswith('.late_rodata_alignment'):
             if self.cur_section != '.late_rodata':
-                self.fail(".late_rodata_alignment must occur within .late_rodata section")
+                self.fail(".late_rodata_alignment must occur within .late_rodata section", real_line)
             self.late_rodata_alignment = int(line.split()[1])
             if self.late_rodata_alignment not in [4, 8]:
-                self.fail(".late_rodata_alignment argument must be 4 or 8", line)
+                self.fail(".late_rodata_alignment argument must be 4 or 8", real_line)
             changed_section = True
         elif line.startswith('.incbin'):
-            self.add_sized(int(line.split(',')[-1].strip(), 0), line)
+            self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
         elif line.startswith('.word') or line.startswith('.float'):
             self.align4()
-            self.add_sized(4 * len(line.split(',')), line)
+            self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
             self.align4()
-            self.add_sized(8 * len(line.split(',')), line)
+            self.add_sized(8 * len(line.split(',')), real_line)
         elif line.startswith('.space'):
-            self.add_sized(int(line.split()[1], 0), line)
+            self.add_sized(int(line.split()[1], 0), real_line)
         elif line.startswith('.balign') or line.startswith('.align'):
             align = int(line.split()[1])
             if align != 4:
-                self.fail("only .balign 4 is supported", line)
+                self.fail("only .balign 4 is supported", real_line)
             self.align4()
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
-            self.add_sized(self.count_quoted_size(line, z), line)
+            self.add_sized(self.count_quoted_size(line, z), real_line)
         elif line.startswith('.'):
             # .macro, ...
-            self.fail("asm directive not supported", line)
+            self.fail("asm directive not supported", real_line)
         else:
             # Unfortunately, macros are hard to support for .rodata --
             # we don't know how how space they will expand to before
@@ -514,13 +516,13 @@ class GlobalAsmBlock:
             # Similarly, we can't currently deal with pseudo-instructions
             # that expand to several real instructions.
             if self.cur_section != '.text':
-                self.fail("instruction or macro call in non-.text section? not supported", line)
-            self.add_sized(4, line)
+                self.fail("instruction or macro call in non-.text section? not supported", real_line)
+            self.add_sized(4, real_line)
         if self.cur_section == '.late_rodata':
             if not changed_section:
-                self.late_rodata_asm_conts.append(line)
+                self.late_rodata_asm_conts.append(real_line)
         else:
-            self.asm_conts.append(line)
+            self.asm_conts.append(real_line)
 
     def finish(self, state):
         src = [''] * (self.num_lines + 1)
