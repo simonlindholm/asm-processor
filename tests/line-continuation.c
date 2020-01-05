@@ -18,3 +18,5 @@ GLOBAL_ASM(
 )
 
 void baz(void) { "ghijkl"; }
+
+GLOBAL_ASM("tests/line-continuation-separate-file.s")

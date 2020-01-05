@@ -670,7 +670,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=
                 asm_functions.append(fn)
                 global_asm = None
             else:
-                global_asm.process_line(line)
+                global_asm.process_line(raw_line)
         else:
             if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
                 global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
@@ -681,7 +681,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=
                 global_asm = GlobalAsmBlock(fname)
                 with open(fname, encoding=input_enc) as f:
                     for line2 in f:
-                        global_asm.process_line(line2)
+                        global_asm.process_line(line2.rstrip())
                 src, fn = global_asm.finish(state)
                 output_lines[-1] = ''.join(src)
                 asm_functions.append(fn)
