@@ -506,6 +506,8 @@ class GlobalAsmBlock:
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
             self.add_sized(self.count_quoted_size(line, z, real_line, output_enc), real_line)
+        elif line.startswith('.byte'):
+            self.add_sized(len(line.split(',')), real_line)
         elif line.startswith('.'):
             # .macro, ...
             self.fail("asm directive not supported", real_line)
