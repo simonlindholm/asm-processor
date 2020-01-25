@@ -436,8 +436,8 @@ class GlobalAsmBlock:
         return ret + num_parts if z else ret
 
 
-    def align4(self):
-        while self.fn_section_sizes[self.cur_section] % 4 != 0:
+    def align_n(self, n):
+        while self.fn_section_sizes[self.cur_section] % n != 0:
             self.fn_section_sizes[self.cur_section] += 1
 
     def add_sized(self, size, line):
@@ -488,21 +488,21 @@ class GlobalAsmBlock:
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
         elif line.startswith('.word') or line.startswith('.float'):
-            self.align4()
+            self.align_n(4)
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
-            self.align4()
+            self.align_n(4)
             self.add_sized(8 * len(line.split(',')), real_line)
         elif line.startswith('.space'):
             self.add_sized(int(line.split()[1], 0), real_line)
         elif line.startswith('.balign') or line.startswith('.align'):
             align = int(line.split()[1])
-            if align != 4:
-                self.fail("only .balign 4 is supported", real_line)
-            self.align4()
+            self.align_n(align)
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
             self.add_sized(self.count_quoted_size(line, z), real_line)
+        elif line.startswith('.byte'):
+            self.add_sized(len(line.split(',')), real_line)
         elif line.startswith('.'):
             # .macro, ...
             self.fail("asm directive not supported", real_line)
