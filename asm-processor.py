@@ -467,6 +467,7 @@ class GlobalAsmBlock:
         line = line.strip()
         line = re.sub(r'^[a-zA-Z0-9_]+:\s*', '', line)
         changed_section = False
+        emitting_double = False
         if line.startswith('glabel ') and self.cur_section == '.text':
             self.text_glabels.append(line.split()[1])
         if not line:
@@ -494,6 +495,7 @@ class GlobalAsmBlock:
         elif line.startswith('.double'):
             self.align4()
             self.add_sized(8 * len(line.split(',')), real_line)
+            emitting_double = True
         elif line.startswith('.space'):
             self.add_sized(int(line.split()[1], 0), real_line)
         elif line.startswith('.balign') or line.startswith('.align'):
@@ -521,7 +523,11 @@ class GlobalAsmBlock:
             self.add_sized(4, real_line)
         if self.cur_section == '.late_rodata':
             if not changed_section:
+                if emitting_double:
+                    self.late_rodata_asm_conts.append(".align 0")
                 self.late_rodata_asm_conts.append(real_line)
+                if emitting_double:
+                    self.late_rodata_asm_conts.append(".align 2")
         else:
             self.asm_conts.append(real_line)
 
