@@ -393,7 +393,8 @@ class GlobalAsmBlock:
             context += ", at line \"" + line + "\""
         raise Failure(message + "\nwithin " + context)
 
-    def count_quoted_size(self, line, z):
+    def count_quoted_size(self, line, z, real_line, output_enc):
+        line = line.encode(output_enc).decode('latin1')
         in_quote = False
         num_parts = 0
         ret = 0
@@ -414,7 +415,7 @@ class GlobalAsmBlock:
                 if c != '\\':
                     continue
                 if i == len(line):
-                    self.fail("backslash at end of line not supported", line)
+                    self.fail("backslash at end of line not supported", real_line)
                 c = line[i]
                 i += 1
                 # (if c is in "bfnrtv", we have a real escaped literal)
@@ -430,14 +431,14 @@ class GlobalAsmBlock:
                         it += 1
 
         if in_quote:
-            self.fail("unterminated string literal", line)
+            self.fail("unterminated string literal", real_line)
         if num_parts == 0:
-            self.fail(".ascii with no string", line)
+            self.fail(".ascii with no string", real_line)
         return ret + num_parts if z else ret
 
 
-    def align_n(self, n):
-        while self.fn_section_sizes[self.cur_section] % n != 0:
+    def align4(self):
+        while self.fn_section_sizes[self.cur_section] % 4 != 0:
             self.fn_section_sizes[self.cur_section] += 1
 
     def add_sized(self, size, line):
@@ -452,7 +453,7 @@ class GlobalAsmBlock:
                 self.fail(".text block without an initial glabel", line)
             self.fn_ins_inds.append((self.num_lines - 1, size // 4))
 
-    def process_line(self, line):
+    def process_line(self, line, output_enc):
         self.num_lines += 1
         if line.endswith('\\'):
             self.glued_line += line[:-1]
@@ -466,6 +467,7 @@ class GlobalAsmBlock:
         line = line.strip()
         line = re.sub(r'^[a-zA-Z0-9_]+:\s*', '', line)
         changed_section = False
+        emitting_double = False
         if line.startswith('glabel ') and self.cur_section == '.text':
             self.text_glabels.append(line.split()[1])
         if not line:
@@ -488,19 +490,22 @@ class GlobalAsmBlock:
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
         elif line.startswith('.word') or line.startswith('.float'):
-            self.align_n(4)
+            self.align4()
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
-            self.align_n(4)
+            self.align4()
             self.add_sized(8 * len(line.split(',')), real_line)
+            emitting_double = True
         elif line.startswith('.space'):
             self.add_sized(int(line.split()[1], 0), real_line)
         elif line.startswith('.balign') or line.startswith('.align'):
             align = int(line.split()[1])
-            self.align_n(align)
+            if align != 4:
+                self.fail("only .balign 4 is supported", real_line)
+            self.align4()
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
-            self.add_sized(self.count_quoted_size(line, z), real_line)
+            self.add_sized(self.count_quoted_size(line, z, real_line, output_enc), real_line)
         elif line.startswith('.byte'):
             self.add_sized(len(line.split(',')), real_line)
         elif line.startswith('.'):
@@ -520,7 +525,11 @@ class GlobalAsmBlock:
             self.add_sized(4, real_line)
         if self.cur_section == '.late_rodata':
             if not changed_section:
+                if emitting_double:
+                    self.late_rodata_asm_conts.append(".align 0")
                 self.late_rodata_asm_conts.append(real_line)
+                if emitting_double:
+                    self.late_rodata_asm_conts.append(".align 2")
         else:
             self.asm_conts.append(real_line)
 
@@ -622,7 +631,7 @@ class GlobalAsmBlock:
         })
         return src, fn
 
-def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=False):
+def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=False):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -670,7 +679,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=
                 asm_functions.append(fn)
                 global_asm = None
             else:
-                global_asm.process_line(raw_line)
+                global_asm.process_line(raw_line, output_enc)
         else:
             if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
                 global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
@@ -681,7 +690,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc=None, print_source=
                 global_asm = GlobalAsmBlock(fname)
                 with open(fname, encoding=input_enc) as f:
                     for line2 in f:
-                        global_asm.process_line(line2.rstrip())
+                        global_asm.process_line(line2.rstrip(), output_enc)
                 src, fn = global_asm.finish(state)
                 output_lines[-1] = ''.join(src)
                 asm_functions.append(fn)
@@ -976,7 +985,7 @@ def main():
         if args.assembler is None:
             raise Failure("must pass assembler command")
         with open(args.filename, encoding=args.input_enc) as f:
-            functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc)
+            functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc)
         if not functions:
             return
         asm_prelude = b''
