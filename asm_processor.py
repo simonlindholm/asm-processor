@@ -662,7 +662,7 @@ class GlobalAsmBlock:
                 })
         return src, fn
 
-def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=False):
+def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -731,7 +731,10 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=False
 
     if print_source:
         for line in output_lines:
-            sys.stdout.buffer.write(line.encode(output_enc) + b'\n')
+            print_source.write(line.encode(output_enc) + b'\n')
+        print_source.flush()
+        if print_source != sys.stdout.buffer:
+            print_source.close()
 
     return asm_functions
 
@@ -1001,7 +1004,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         except:
             pass
 
-def main():
+def run_wrapped(argv, outfile):
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
@@ -1015,7 +1018,7 @@ def main():
     group.add_argument('-O1', dest='opt', action='store_const', const='O1')
     group.add_argument('-O2', dest='opt', action='store_const', const='O2')
     group.add_argument('-g', dest='opt', action='store_const', const='g')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     opt = args.opt
     if args.g3:
         if opt != 'O2':
@@ -1024,7 +1027,7 @@ def main():
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
-            parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=True)
+            parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=outfile)
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
@@ -1038,9 +1041,12 @@ def main():
                 asm_prelude = f.read()
         fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc)
 
-if __name__ == "__main__":
+def run(argv, outfile=sys.stdout.buffer):
     try:
-        main()
+        run_wrapped(argv, outfile)
     except Failure as e:
         print("Error:", e, file=sys.stderr)
         sys.exit(1)
+
+if __name__ == "__main__":
+    run(sys.argv[1:])

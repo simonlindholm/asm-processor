@@ -2,12 +2,6 @@
 
 Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IRIX-compiled C.
 
-This can be useful for decompilation, as it allows:
-
- * postponing harder functions
- * getting byte-exact matches for partially decompiled files
- * decompiling functions in the middle of files
-
 ## Usage
 
 Let's say you have a file compiled with `-g` on the IRIX compiler, that looks like this:
@@ -41,7 +35,7 @@ nop
 )
 ```
 
-To compile the file, run `./compile.sh file.c`, or invoke the `asm-processor.py` script in a similar manner. (`compile.sh` is mostly just intended to describe example usage.)
+To compile the file, run `./compile.sh file.c`, or invoke the `asm_processor.py` script in a similar manner. (`compile.sh` is mostly just intended to describe example usage.)
 
 Reading assembly from file is also supported, e.g. `GLOBAL_ASM("file.s")`.
 

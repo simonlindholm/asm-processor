@@ -9,5 +9,5 @@ CFLAGS="-Wab,-r4300_mul -non_shared -G 0 -Xcpluscomm -fullwarn -wlint -woff 819,
 AS="mips-linux-gnu-as"
 ASFLAGS="-march=vr4300 -mabi=32 --defsym VERSION_JP=1" # -I include
 
-python3 asm-processor.py -g "$INPUT" | $CC -c $CFLAGS include-stdin.c -o "$OUTPUT" -g
-python3 asm-processor.py -g "$INPUT" --post-process "$OUTPUT" --assembler "$AS $ASFLAGS" --asm-prelude prelude.s
+python3 asm_processor.py -g "$INPUT" | $CC -c $CFLAGS include-stdin.c -o "$OUTPUT" -g
+python3 asm_processor.py -g "$INPUT" --post-process "$OUTPUT" --assembler "$AS $ASFLAGS" --asm-prelude prelude.s
