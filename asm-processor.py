@@ -6,6 +6,7 @@ import copy
 import sys
 import re
 import os
+from collections import namedtuple
 
 MAX_FN_SIZE = 100
 
@@ -376,6 +377,9 @@ class GlobalState:
         return '_asmpp_{}{}'.format(cat, self.namectr)
 
 
+Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata', 'late_rodata_asm_conts', 'fn_desc', 'data'])
+
+
 class GlobalAsmBlock:
     def __init__(self, fn_desc):
         self.fn_desc = fn_desc
@@ -644,13 +648,18 @@ class GlobalAsmBlock:
             bss_name = state.make_name('bss')
             src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
 
-        fn = (self.text_glabels, self.asm_conts, late_rodata, self.late_rodata_asm_conts, self.fn_desc,
-        {
-            '.text': (text_name, self.fn_section_sizes['.text']),
-            '.data': (data_name, self.fn_section_sizes['.data']),
-            '.rodata': (rodata_name, self.fn_section_sizes['.rodata']),
-            '.bss': (bss_name, self.fn_section_sizes['.bss']),
-        })
+        fn = Function(
+                text_glabels=self.text_glabels,
+                asm_conts=self.asm_conts,
+                late_rodata=late_rodata,
+                late_rodata_asm_conts=self.late_rodata_asm_conts,
+                fn_desc=self.fn_desc,
+                data={
+                    '.text': (text_name, self.fn_section_sizes['.text']),
+                    '.data': (data_name, self.fn_section_sizes['.data']),
+                    '.rodata': (rodata_name, self.fn_section_sizes['.rodata']),
+                    '.bss': (bss_name, self.fn_section_sizes['.bss']),
+                })
         return src, fn
 
 def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=False):
@@ -754,9 +763,9 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
     # simplicity we pad with nops/.space so that addresses match exactly, so we
     # don't have to fix up relocations/symbol references.
     all_text_glabels = set()
-    for (text_glabels, body, fn_late_rodata, fn_late_rodata_body, fn_desc, data) in functions:
+    for function in functions:
         ifdefed = False
-        for sectype, (temp_name, size) in data.items():
+        for sectype, (temp_name, size) in function.data.items():
             if temp_name is None:
                 continue
             assert size > 0
@@ -774,20 +783,20 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                         asm.append('nop')
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
-            to_copy[sectype].append((loc, size, temp_name, fn_desc))
+            to_copy[sectype].append((loc, size, temp_name, function.fn_desc))
             prev_locs[sectype] = loc + size
         if not ifdefed:
-            all_text_glabels.update(text_glabels)
-            late_rodata.extend(fn_late_rodata)
-            late_rodata_asm.extend(fn_late_rodata_body)
-            for sectype, (temp_name, size) in data.items():
+            all_text_glabels.update(function.text_glabels)
+            late_rodata.extend(function.late_rodata)
+            late_rodata_asm.extend(function.late_rodata_asm_conts)
+            for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
                     asm.append('glabel ' + temp_name + '_asm_start')
             asm.append('.text')
-            for line in body:
+            for line in function.asm_conts:
                 asm.append(line)
-            for sectype, (temp_name, size) in data.items():
+            for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
                     asm.append('glabel ' + temp_name + '_asm_end')
