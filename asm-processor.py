@@ -375,6 +375,7 @@ class GlobalAsmBlock:
         self.asm_conts = []
         self.late_rodata_asm_conts = []
         self.late_rodata_alignment = 0
+        self.late_rodata_alignment_from_content = False
         self.text_glabels = []
         self.fn_section_sizes = {
             '.text': 0,
@@ -483,9 +484,12 @@ class GlobalAsmBlock:
         elif line.startswith('.late_rodata_alignment'):
             if self.cur_section != '.late_rodata':
                 self.fail(".late_rodata_alignment must occur within .late_rodata section", real_line)
-            self.late_rodata_alignment = int(line.split()[1])
-            if self.late_rodata_alignment not in [4, 8]:
+            value = int(line.split()[1])
+            if value not in [4, 8]:
                 self.fail(".late_rodata_alignment argument must be 4 or 8", real_line)
+            if self.late_rodata_alignment and self.late_rodata_alignment != value:
+                self.fail(".late_rodata_alignment alignment assumption conflicts with earlier .double directive. Make sure to provide explicit alignment padding.")
+            self.late_rodata_alignment = value
             changed_section = True
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
@@ -494,6 +498,19 @@ class GlobalAsmBlock:
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
             self.align4()
+            if self.cur_section == '.late_rodata':
+                align8 = self.fn_section_sizes[self.cur_section] % 8
+                # Automatically set late_rodata_alignment, so the generated C code uses doubles.
+                # This gives us correct alignment for the transferred doubles even when the
+                # late_rodata_alignment is wrong, e.g. for non-matching compilation.
+                if not self.late_rodata_alignment:
+                    self.late_rodata_alignment = 8 - align8
+                    self.late_rodata_alignment_from_content = True
+                elif self.late_rodata_alignment != 8 - align8:
+                    if self.late_rodata_alignment_from_content:
+                        self.fail("found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.", real_line)
+                    else:
+                        self.fail(".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.", real_line)
             self.add_sized(8 * len(line.split(',')), real_line)
             emitting_double = True
         elif line.startswith('.space'):
