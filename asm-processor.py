@@ -377,7 +377,7 @@ class GlobalState:
         return '_asmpp_{}{}'.format(cat, self.namectr)
 
 
-Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata', 'late_rodata_asm_conts', 'fn_desc', 'data'])
+Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata_dummy_bytes', 'late_rodata_asm_conts', 'fn_desc', 'data'])
 
 
 class GlobalAsmBlock:
@@ -564,7 +564,7 @@ class GlobalAsmBlock:
 
     def finish(self, state):
         src = [''] * (self.num_lines + 1)
-        late_rodata = []
+        late_rodata_dummy_bytes = []
         late_rodata_fn_output = []
 
         if self.fn_section_sizes['.late_rodata'] > 0:
@@ -579,10 +579,10 @@ class GlobalAsmBlock:
                     skip_next = False
                     continue
                 dummy_bytes = state.next_late_rodata_hex()
-                late_rodata.append(dummy_bytes)
+                late_rodata_dummy_bytes.append(dummy_bytes)
                 if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
                     dummy_bytes2 = state.next_late_rodata_hex()
-                    late_rodata.append(dummy_bytes2)
+                    late_rodata_dummy_bytes.append(dummy_bytes2)
                     fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
@@ -651,7 +651,7 @@ class GlobalAsmBlock:
         fn = Function(
                 text_glabels=self.text_glabels,
                 asm_conts=self.asm_conts,
-                late_rodata=late_rodata,
+                late_rodata_dummy_bytes=late_rodata_dummy_bytes,
                 late_rodata_asm_conts=self.late_rodata_asm_conts,
                 fn_desc=self.fn_desc,
                 data={
@@ -754,7 +754,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         '.bss': [],
     }
     asm = []
-    late_rodata = []
+    late_rodata_dummy_bytes = []
     late_rodata_asm = []
     late_rodata_source_name_start = None
     late_rodata_source_name_end = None
@@ -787,8 +787,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
             prev_locs[sectype] = loc + size
         if not ifdefed:
             all_text_glabels.update(function.text_glabels)
-            late_rodata.extend(function.late_rodata)
-            late_rodata_asm.extend(function.late_rodata_asm_conts)
+            late_rodata_dummy_bytes.append(function.late_rodata_dummy_bytes)
+            late_rodata_asm.append(function.late_rodata_asm_conts)
             for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
@@ -800,12 +800,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
                     asm.append('glabel ' + temp_name + '_asm_end')
-    if late_rodata_asm:
+    if any(late_rodata_asm):
         late_rodata_source_name_start = '_asmpp_late_rodata_start'
         late_rodata_source_name_end = '_asmpp_late_rodata_end'
         asm.append('.rdata')
         asm.append('glabel {}'.format(late_rodata_source_name_start))
-        asm.extend(late_rodata_asm)
+        for conts in late_rodata_asm:
+            asm.extend(conts)
         asm.append('glabel {}'.format(late_rodata_source_name_end))
 
     o_file = tempfile.NamedTemporaryFile(prefix='asm-processor', suffix='.o', delete=False)
@@ -868,22 +869,32 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         # Move over late rodata. This is heuristic, sadly, since I can't think
         # of another way of doing it.
         moved_late_rodata = {}
-        if late_rodata:
+        if any(late_rodata_dummy_bytes):
             source = asm_objfile.find_section('.rodata')
             target = objfile.find_section('.rodata')
             source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
             source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
-            if source_end - source_pos != len(late_rodata) * 4:
+            if source_end - source_pos != sum(map(len, late_rodata_dummy_bytes)) * 4:
                 raise Failure("computed wrong size of .late_rodata")
             new_data = list(target.data)
-            for dummy_bytes in late_rodata:
-                pos = target.data.index(dummy_bytes, last_rodata_pos)
-                if target.data.find(dummy_bytes, pos + 4) != -1:
-                    raise Failure("multiple occurrences of late_rodata hex magic. Change asm-processor to use something better than 0xE0123456!")
-                new_data[pos:pos+4] = source.data[source_pos:source_pos+4]
-                moved_late_rodata[source_pos] = pos
-                last_rodata_pos = pos + 4
-                source_pos += 4
+            for dummy_bytes_list in late_rodata_dummy_bytes:
+                for index, dummy_bytes in enumerate(dummy_bytes_list):
+                    pos = target.data.index(dummy_bytes, last_rodata_pos)
+                    if target.data.find(dummy_bytes, pos + 4) != -1:
+                        raise Failure("multiple occurrences of late_rodata hex magic. Change asm-processor to use something better than 0xE0123456!")
+                    if index == 0 and len(dummy_bytes_list) > 1 and target.data[pos+4:pos+8] == b'\0\0\0\0':
+                        # Ugly hack to handle double alignment for non-matching builds.
+                        # We were told by .late_rodata_alignment (or deduced from a .double)
+                        # that a function's late_rodata started out 4 (mod 8), and emitted
+                        # a float and then a double. But it was actually 0 (mod 8), so our
+                        # double was moved by 4 bytes. To make them adjacent to keep jump
+                        # tables correct, move the float by 4 bytes as well.
+                        new_data[pos:pos+4] = b'\0\0\0\0'
+                        pos += 4
+                    new_data[pos:pos+4] = source.data[source_pos:source_pos+4]
+                    moved_late_rodata[source_pos] = pos
+                    last_rodata_pos = pos + 4
+                    source_pos += 4
             target.data = bytes(new_data)
 
         # Merge strtab data.
