@@ -363,6 +363,14 @@ class GlobalState:
         self.min_instr_count = min_instr_count
         self.skip_instr_count = skip_instr_count
 
+    def next_late_rodata_hex(self):
+        dummy_bytes = struct.pack('>I', self.late_rodata_hex)
+        if (self.late_rodata_hex & 0xffff) == 0:
+            # Avoid lui
+            self.late_rodata_hex += 1
+        self.late_rodata_hex += 1
+        return dummy_bytes
+
     def make_name(self, cat):
         self.namectr += 1
         return '_asmpp_{}{}'.format(cat, self.namectr)
@@ -566,15 +574,12 @@ class GlobalAsmBlock:
                 if skip_next:
                     skip_next = False
                     continue
-                if (state.late_rodata_hex & 0xffff) == 0:
-                    # Avoid lui
-                    state.late_rodata_hex += 1
-                dummy_bytes = struct.pack('>I', state.late_rodata_hex)
-                state.late_rodata_hex += 1
+                dummy_bytes = state.next_late_rodata_hex()
                 late_rodata.append(dummy_bytes)
                 if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
-                    late_rodata.append(dummy_bytes)
-                    fval, = struct.unpack('>d', dummy_bytes * 2)
+                    dummy_bytes2 = state.next_late_rodata_hex()
+                    late_rodata.append(dummy_bytes2)
+                    fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
                 else:
@@ -860,10 +865,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
             source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
             source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
             if source_end - source_pos != len(late_rodata) * 4:
-                raise Failure("computed wrong size of .late_rodata. If using .double, make sure to provide explicit alignment padding.")
+                raise Failure("computed wrong size of .late_rodata")
             new_data = list(target.data)
             for dummy_bytes in late_rodata:
                 pos = target.data.index(dummy_bytes, last_rodata_pos)
+                if target.data.find(dummy_bytes, pos + 4) != -1:
+                    raise Failure("multiple occurrences of late_rodata hex magic. Change asm-processor to use something better than 0xE0123456!")
                 new_data[pos:pos+4] = source.data[source_pos:source_pos+4]
                 moved_late_rodata[source_pos] = pos
                 last_rodata_pos = pos + 4
