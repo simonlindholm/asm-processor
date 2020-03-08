@@ -9,6 +9,7 @@ import os
 from collections import namedtuple
 
 MAX_FN_SIZE = 100
+SLOW_CHECKS = False
 
 EI_NIDENT     = 16
 EI_CLASS      = 4
@@ -883,7 +884,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
             for dummy_bytes_list in late_rodata_dummy_bytes:
                 for index, dummy_bytes in enumerate(dummy_bytes_list):
                     pos = target.data.index(dummy_bytes, last_rodata_pos)
-                    if target.data.find(dummy_bytes, pos + 4) != -1:
+                    # This check is nice, but makes time complexity worse for large files:
+                    if SLOW_CHECKS and target.data.find(dummy_bytes, pos + 4) != -1:
                         raise Failure("multiple occurrences of late_rodata hex magic. Change asm-processor to use something better than 0xE0123456!")
                     if index == 0 and len(dummy_bytes_list) > 1 and target.data[pos+4:pos+8] == b'\0\0\0\0':
                         # Ugly hack to handle double alignment for non-matching builds.
