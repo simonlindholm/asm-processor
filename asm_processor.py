@@ -371,13 +371,14 @@ class Failure(Exception):
 
 
 class GlobalState:
-    def __init__(self, min_instr_count, skip_instr_count):
+    def __init__(self, min_instr_count, skip_instr_count, use_jtbl_for_rodata):
         # A value that hopefully never appears as a 32-bit rodata constant (or we
         # miscompile late rodata). Increases by 1 in each step.
         self.late_rodata_hex = 0xE0123456
         self.namectr = 0
         self.min_instr_count = min_instr_count
         self.skip_instr_count = skip_instr_count
+        self.use_jtbl_for_rodata = use_jtbl_for_rodata
 
     def next_late_rodata_hex(self):
         dummy_bytes = struct.pack('>I', self.late_rodata_hex)
@@ -392,7 +393,7 @@ class GlobalState:
         return '_asmpp_{}{}'.format(cat, self.namectr)
 
 
-Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata_dummy_bytes', 'late_rodata_asm_conts', 'fn_desc', 'data'])
+Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata_dummy_bytes', 'jtbl_rodata_size', 'late_rodata_asm_conts', 'fn_desc', 'data'])
 
 
 class GlobalAsmBlock:
@@ -579,7 +580,10 @@ class GlobalAsmBlock:
     def finish(self, state):
         src = [''] * (self.num_lines + 1)
         late_rodata_dummy_bytes = []
+        jtbl_rodata_size = 0
         late_rodata_fn_output = []
+
+        num_instr = self.fn_section_sizes['.text'] // 4
 
         if self.fn_section_sizes['.late_rodata'] > 0:
             # Generate late rodata by emitting unique float constants.
@@ -588,10 +592,29 @@ class GlobalAsmBlock:
             # instructions for 8 bytes of rodata.
             size = self.fn_section_sizes['.late_rodata'] // 4
             skip_next = False
+            needs_double = (self.late_rodata_alignment != 0)
             for i in range(size):
                 if skip_next:
                     skip_next = False
                     continue
+                # Jump tables give 9 instructions for >= 5 words of rodata, and should be
+                # emitted when:
+                # - -O2 or -O2 -g3 are used, which give the right codegen
+                # - we have emitted our first .float/.double (to ensure that we find the
+                #   created rodata in the binary)
+                # - we have emitted our first .double, if any (to ensure alignment of doubles
+                #   in shifted rodata sections)
+                # - we have at least 5 words of rodata left to emit (otherwise IDO does not
+                #   generate a jump table)
+                # - we have at least 10 more instructions to go in this function (otherwise our
+                #   function size computation will be wrong since the delay slot goes unused)
+                if (not needs_double and state.use_jtbl_for_rodata and i >= 1 and
+                        size - i >= 5 and num_instr - len(late_rodata_fn_output) >= 10):
+                    cases = " ".join("case {}:".format(case) for case in range(size - i))
+                    late_rodata_fn_output.append("switch (*(volatile int*)0) { " + cases + " ; }")
+                    late_rodata_fn_output.extend([""] * 8)
+                    jtbl_rodata_size = (size - i) * 4
+                    break
                 dummy_bytes = state.next_late_rodata_hex()
                 late_rodata_dummy_bytes.append(dummy_bytes)
                 if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
@@ -600,6 +623,7 @@ class GlobalAsmBlock:
                     fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
+                    needs_double = True
                 else:
                     fval, = struct.unpack('>f', dummy_bytes)
                     late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
@@ -666,6 +690,7 @@ class GlobalAsmBlock:
                 text_glabels=self.text_glabels,
                 asm_conts=self.asm_conts,
                 late_rodata_dummy_bytes=late_rodata_dummy_bytes,
+                jtbl_rodata_size=jtbl_rodata_size,
                 late_rodata_asm_conts=self.late_rodata_asm_conts,
                 fn_desc=self.fn_desc,
                 data={
@@ -701,7 +726,11 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
             min_instr_count = 2
             skip_instr_count = 2
 
-    state = GlobalState(min_instr_count, skip_instr_count)
+    use_jtbl_for_rodata = False
+    if opt in ['O2', 'g3'] and not framepointer:
+        use_jtbl_for_rodata = True
+
+    state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata)
 
     global_asm = None
     asm_functions = []
@@ -771,7 +800,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         '.bss': [],
     }
     asm = []
-    late_rodata_dummy_bytes = []
+    all_late_rodata_dummy_bytes = []
+    all_jtbl_rodata_size = []
     late_rodata_asm = []
     late_rodata_source_name_start = None
     late_rodata_source_name_end = None
@@ -792,7 +822,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 break
             loc = loc[1]
             prev_loc = prev_locs[sectype]
-            assert loc >= prev_loc, sectype
+            if loc < prev_loc:
+                raise Failure("Wrongly computed size for section {} (diff {}). This is an asm-processor bug!".format(sectype, prev_loc- loc))
             if loc != prev_loc:
                 asm.append('.section ' + sectype)
                 if sectype == '.text':
@@ -804,7 +835,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
             prev_locs[sectype] = loc + size
         if not ifdefed:
             all_text_glabels.update(function.text_glabels)
-            late_rodata_dummy_bytes.append(function.late_rodata_dummy_bytes)
+            all_late_rodata_dummy_bytes.append(function.late_rodata_dummy_bytes)
+            all_jtbl_rodata_size.append(function.jtbl_rodata_size)
             late_rodata_asm.append(function.late_rodata_asm_conts)
             for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
@@ -855,6 +887,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
 
         # Move over section contents
         modified_text_positions = set()
+        jtbl_rodata_positions = set()
         last_rodata_pos = 0
         for sectype in SECTIONS:
             if not to_copy[sectype]:
@@ -886,15 +919,15 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         # Move over late rodata. This is heuristic, sadly, since I can't think
         # of another way of doing it.
         moved_late_rodata = {}
-        if any(late_rodata_dummy_bytes):
+        if any(all_late_rodata_dummy_bytes) or any(all_jtbl_rodata_size):
             source = asm_objfile.find_section('.rodata')
             target = objfile.find_section('.rodata')
             source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
             source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
-            if source_end - source_pos != sum(map(len, late_rodata_dummy_bytes)) * 4:
+            if source_end - source_pos != sum(map(len, all_late_rodata_dummy_bytes)) * 4 + sum(all_jtbl_rodata_size):
                 raise Failure("computed wrong size of .late_rodata")
             new_data = list(target.data)
-            for dummy_bytes_list in late_rodata_dummy_bytes:
+            for dummy_bytes_list, jtbl_rodata_size in zip(all_late_rodata_dummy_bytes, all_jtbl_rodata_size):
                 for index, dummy_bytes in enumerate(dummy_bytes_list):
                     pos = target.data.index(dummy_bytes, last_rodata_pos)
                     # This check is nice, but makes time complexity worse for large files:
@@ -913,6 +946,16 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                     moved_late_rodata[source_pos] = pos
                     last_rodata_pos = pos + 4
                     source_pos += 4
+                if jtbl_rodata_size > 0:
+                    assert dummy_bytes_list, "should always have dummy bytes before jtbl data"
+                    pos = last_rodata_pos
+                    new_data[pos : pos + jtbl_rodata_size] = \
+                        source.data[source_pos : source_pos + jtbl_rodata_size]
+                    for i in range(0, jtbl_rodata_size, 4):
+                        moved_late_rodata[source_pos + i] = pos + i
+                        jtbl_rodata_positions.add(pos + i)
+                    last_rodata_pos += jtbl_rodata_size
+                    source_pos += jtbl_rodata_size
             target.data = bytes(new_data)
 
         # Merge strtab data.
@@ -974,7 +1017,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 for reltab in target.relocated_by:
                     nrels = []
                     for rel in reltab.relocations:
-                        if sectype == '.text' and rel.r_offset in modified_text_positions:
+                        if (sectype == '.text' and rel.r_offset in modified_text_positions or
+                            sectype == '.rodata' and rel.r_offset in jtbl_rodata_positions):
                             # don't include relocations for late_rodata dummy code
                             continue
                         # hopefully we don't have relocations for local or
