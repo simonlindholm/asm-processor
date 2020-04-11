@@ -348,6 +348,20 @@ def is_temp_name(name):
     return name.startswith('_asmpp_')
 
 
+# https://stackoverflow.com/a/241506
+def re_comment_replacer(match):
+    s = match.group(0)
+    if s[0] in "/#":
+        return " "
+    else:
+        return s
+
+
+re_comment_or_string = re.compile(
+    r'#.*|/\*.*?\*/|"(?:\\.|[^\\"])*"'
+)
+
+
 class Failure(Exception):
     def __init__(self, message):
         self.message = message
@@ -476,8 +490,7 @@ class GlobalAsmBlock:
         self.glued_line = ''
 
         real_line = line
-        line = re.sub(r'/\*.*?\*/', '', line)
-        line = re.sub(r'#.*', '', line)
+        line = re.sub(re_comment_or_string, re_comment_replacer, line)
         line = line.strip()
         line = re.sub(r'^[a-zA-Z0-9_]+:\s*', '', line)
         changed_section = False
