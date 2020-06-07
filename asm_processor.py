@@ -702,6 +702,9 @@ class GlobalAsmBlock:
                 })
         return src, fn
 
+cutscene_data_regexpr = re.compile(r"(CutsceneData (.|\n)*\[\] = {)")
+float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
+
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
@@ -737,9 +740,10 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
     state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata)
 
     global_asm = None
-    is_cutscene_data = False
     asm_functions = []
     output_lines = []
+
+    is_cutscene_data = False
 
     for line_no, raw_line in enumerate(f, 1):
         raw_line = raw_line.rstrip()
@@ -776,7 +780,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
                 global_asm = None
             elif ((line.startswith('#include "')) and line.endswith('" EARLY')):
                 # C includes qualified with EARLY (i.e. #include "file.c" EARLY) will be
-                # processed recursively when encountered.
+                # processed recursively when encountered
                 fpath = os.path.dirname(f.name)
                 fname = line[line.index(' ') + 2 : -7]
                 include_src = StringIO()
@@ -788,12 +792,12 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
             else:
                 # This is a hack to replace all floating-point numbers in an array of a particular type
                 # (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
-                if re.compile(r"(CutsceneData (.|\n)*\[\] = {)").search(line) is not None:
+                if cutscene_data_regexpr.search(line) is not None:
                     is_cutscene_data = True
                 elif line.endswith("};"):
                     is_cutscene_data = False
                 if is_cutscene_data:
-                    raw_line = re.sub(re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f"), repl_float_hex, raw_line)
+                    raw_line = re.sub(float_regexpr, repl_float_hex, raw_line)
                 output_lines[-1] = raw_line
 
     if print_source:
