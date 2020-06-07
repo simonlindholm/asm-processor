@@ -702,7 +702,7 @@ class GlobalAsmBlock:
                 })
         return src, fn
 
-cutscene_data_regexpr = re.compile(r"(CutsceneData (.|\n)*\[\] = {)")
+cutscene_data_regexpr = re.compile(r"CutsceneData (.|\n)*\[\] = {")
 float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 
 def repl_float_hex(m):
