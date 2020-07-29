@@ -466,6 +466,9 @@ class GlobalAsmBlock:
             self.fail(".ascii with no string", real_line)
         return ret + num_parts if z else ret
 
+    def align2(self):
+        while self.fn_section_sizes[self.cur_section] % 2 != 0:
+            self.fn_section_sizes[self.cur_section] += 1
 
     def align4(self):
         while self.fn_section_sizes[self.cur_section] % 4 != 0:
@@ -553,6 +556,9 @@ class GlobalAsmBlock:
             self.add_sized(self.count_quoted_size(line, z, real_line, output_enc), real_line)
         elif line.startswith('.byte'):
             self.add_sized(len(line.split(',')), real_line)
+        elif line.startswith('.half'):
+            self.align2()
+            self.add_sized(2*len(line.split(',')), real_line)
         elif line.startswith('.'):
             # .macro, ...
             self.fail("asm directive not supported", real_line)
