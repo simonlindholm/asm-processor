@@ -185,7 +185,7 @@ class Section:
         if self.sh_entsize != 0:
             assert self.sh_size % self.sh_entsize == 0
         if self.sh_type == SHT_NOBITS:
-            self.data = ''
+            self.data = b''
         else:
             self.data = data[self.sh_offset:self.sh_offset + self.sh_size]
         self.index = index
@@ -1124,8 +1124,7 @@ def run_wrapped(argv, outfile, functions):
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
-            functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=outfile)
-            return functions
+            return parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=outfile)
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
