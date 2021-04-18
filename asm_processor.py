@@ -856,6 +856,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
     # simplicity we pad with nops/.space so that addresses match exactly, so we
     # don't have to fix up relocations/symbol references.
     all_text_glabels = set()
+    func_sizes = {}
     for function in functions:
         ifdefed = False
         for sectype, (temp_name, size) in function.data.items():
@@ -878,6 +879,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
             to_copy[sectype].append((loc, size, temp_name, function.fn_desc))
+            func_sizes[function.text_glabels[0]] = size
             prev_locs[sectype] = loc + size
         if not ifdefed:
             all_text_glabels.update(function.text_glabels)
@@ -1041,6 +1043,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
                     s.type = STT_FUNC
+                    if s.name in func_sizes:
+                        s.st_size = func_sizes[s.name]
                 if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
                     s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
