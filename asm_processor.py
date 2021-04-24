@@ -879,7 +879,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
             to_copy[sectype].append((loc, size, temp_name, function.fn_desc))
-            func_sizes[function.text_glabels[0]] = size
+            if function.text_glabels:
+                func_sizes[function.text_glabels[0]] = size
             prev_locs[sectype] = loc + size
         if not ifdefed:
             all_text_glabels.update(function.text_glabels)
