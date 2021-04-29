@@ -722,7 +722,7 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None):
+def parse_source(f, opt, framepointer, input_enc, output_enc, out_dependencies, print_source=None):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -786,6 +786,7 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
             elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
                     and line.endswith('")')):
                 fname = line[line.index('(') + 2 : -2]
+                out_dependencies.append(fname)
                 global_asm = GlobalAsmBlock(fname)
                 with open(fname, encoding=input_enc) as f:
                     for line2 in f:
@@ -798,10 +799,11 @@ def parse_source(f, opt, framepointer, input_enc, output_enc, print_source=None)
                 # C includes qualified with EARLY (i.e. #include "file.c" EARLY) will be
                 # processed recursively when encountered
                 fpath = os.path.dirname(f.name)
-                fname = line[line.index(' ') + 2 : -7]
+                fname = os.path.join(fpath, line[line.index(' ') + 2 : -7])
+                out_dependencies.append(fname)
                 include_src = StringIO()
-                with open(fpath + os.path.sep + fname, encoding=input_enc) as include_file:
-                    parse_source(include_file, opt, framepointer, input_enc, output_enc, include_src)
+                with open(fname, encoding=input_enc) as include_file:
+                    parse_source(include_file, opt, framepointer, input_enc, output_enc, out_dependencies, include_src)
                 include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
                 output_lines[-1] = include_src.getvalue()
                 include_src.close()
@@ -1168,6 +1170,11 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         except:
             pass
 
+def emit_deps(deps, target_filename, deps_filename):
+    with open(deps_filename, "w") as f:
+        if deps:
+            f.write(target_filename + ": " + " ".join(deps) + "\n")
+
 def run_wrapped(argv, outfile, functions):
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
@@ -1176,6 +1183,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
     parser.add_argument('--input-enc', default='latin1', help="Input encoding (default: latin1)")
     parser.add_argument('--output-enc', default='latin1', help="Output encoding (default: latin1)")
+    parser.add_argument('--emit-deps', help="Emit GLOBAL_ASM make dependencies to file")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
@@ -1189,15 +1197,21 @@ def run_wrapped(argv, outfile, functions):
             raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
 
+    deps = []
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
-            return parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, print_source=outfile)
+            ret = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
+            if args.emit_deps:
+                emit_deps(deps, args.filename, args.emit_deps)
+            return ret
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
         if functions is None:
             with open(args.filename, encoding=args.input_enc) as f:
-                functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc)
+                functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, out_dependencies=deps, output_enc=args.output_enc)
+        if args.emit_deps:
+            emit_deps(deps, args.filename, args.emit_deps)
         if not functions:
             return
         asm_prelude = b''
