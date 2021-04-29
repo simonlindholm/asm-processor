@@ -1170,10 +1170,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         except:
             pass
 
-def emit_deps(deps, target_filename, deps_filename):
+def emit_deps(deps, objfile, deps_filename):
     with open(deps_filename, "w") as f:
         if deps:
-            f.write(target_filename + ": " + " ".join(deps) + "\n")
+            f.write(objfile + ": " + " ".join(deps) + "\n")
 
 def run_wrapped(argv, outfile, functions):
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
@@ -1200,10 +1200,7 @@ def run_wrapped(argv, outfile, functions):
     deps = []
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
-            ret = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
-            if args.emit_deps:
-                emit_deps(deps, args.filename, args.emit_deps)
-            return ret
+            return parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
@@ -1211,7 +1208,7 @@ def run_wrapped(argv, outfile, functions):
             with open(args.filename, encoding=args.input_enc) as f:
                 functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, out_dependencies=deps, output_enc=args.output_enc)
         if args.emit_deps:
-            emit_deps(deps, args.filename, args.emit_deps)
+            emit_deps(deps, args.objfile, args.emit_deps)
         if not functions:
             return
         asm_prelude = b''
