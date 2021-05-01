@@ -1170,11 +1170,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         except:
             pass
 
-def emit_deps(deps, objfile, deps_filename):
-    with open(deps_filename, "w") as f:
-        if deps:
-            f.write(objfile + ": " + " ".join(deps) + "\n")
-
 def run_wrapped(argv, outfile, functions):
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
@@ -1183,7 +1178,6 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
     parser.add_argument('--input-enc', default='latin1', help="Input encoding (default: latin1)")
     parser.add_argument('--output-enc', default='latin1', help="Output encoding (default: latin1)")
-    parser.add_argument('--emit-deps', help="Emit GLOBAL_ASM make dependencies to file")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
@@ -1197,18 +1191,17 @@ def run_wrapped(argv, outfile, functions):
             raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
 
-    deps = []
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
-            return parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
+            deps = []
+            functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
+            return functions, deps
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
         if functions is None:
             with open(args.filename, encoding=args.input_enc) as f:
-                functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, out_dependencies=deps, output_enc=args.output_enc)
-        if args.emit_deps:
-            emit_deps(deps, args.objfile, args.emit_deps)
+                functions = parse_source(f, opt=opt, framepointer=args.framepointer, input_enc=args.input_enc, out_dependencies=[], output_enc=args.output_enc)
         if not functions:
             return
         asm_prelude = b''
