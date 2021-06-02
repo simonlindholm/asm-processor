@@ -609,7 +609,7 @@ class GlobalAsmBlock:
             size = self.fn_section_sizes['.late_rodata'] // 4
             skip_next = False
             needs_double = (self.late_rodata_alignment != 0)
-            first_float = True
+            extra_mips1_nop = False
             for i in range(size):
                 if skip_next:
                     skip_next = False
@@ -632,6 +632,7 @@ class GlobalAsmBlock:
                     late_rodata_fn_output.append("switch (*(volatile int*)0) { " + cases + " ; }")
                     late_rodata_fn_output.extend([""] * (jtbl_size - 1))
                     jtbl_rodata_size = (size - i) * 4
+                    extra_mips1_nop = True
                     break
                 dummy_bytes = state.next_late_rodata_hex()
                 late_rodata_dummy_bytes.append(dummy_bytes)
@@ -642,14 +643,19 @@ class GlobalAsmBlock:
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
                     needs_double = True
+                    if state.mips1:
+                        # mips1 does not have ldc1/sdc1
+                        late_rodata_fn_output.append('')
+                        late_rodata_fn_output.append('')
+                    extra_mips1_nop = False
                 else:
                     fval, = struct.unpack('>f', dummy_bytes)
                     late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
+                    extra_mips1_nop = True
                 late_rodata_fn_output.append('')
                 late_rodata_fn_output.append('')
-                if state.mips1 and first_float:
-                    late_rodata_fn_output.append('')
-                first_float = False
+            if state.mips1 and extra_mips1_nop:
+                late_rodata_fn_output.append('')
 
         text_name = None
         if self.fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
@@ -756,8 +762,6 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
     use_jtbl_for_rodata = False
     if opt in ['O2', 'g3'] and not framepointer:
         use_jtbl_for_rodata = True
-    if mips1 and opt != 'O2':
-        use_jtbl_for_rodata = False
 
     state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1)
 
@@ -1199,9 +1203,8 @@ def run_wrapped(argv, outfile, functions):
         if opt != 'O2':
             raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
-    if args.mips1:
-        if opt != 'O2':
-            raise Failure("-mips1 is only supported together with -O2")
+    if args.mips1 and (opt != 'O2' or args.framepointer):
+        raise Failure("-mips1 is only supported together with -O2")
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
