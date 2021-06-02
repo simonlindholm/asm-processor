@@ -642,7 +642,7 @@ class GlobalAsmBlock:
                     fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
-                    needs_double = True
+                    needs_double = False
                     if state.mips1:
                         # mips1 does not have ldc1/sdc1
                         late_rodata_fn_output.append('')
