@@ -610,6 +610,7 @@ class GlobalAsmBlock:
             skip_next = False
             needs_double = (self.late_rodata_alignment != 0)
             extra_mips1_nop = False
+            jtbl_size = 11 if state.mips1 else 9
             for i in range(size):
                 if skip_next:
                     skip_next = False
@@ -625,14 +626,13 @@ class GlobalAsmBlock:
                 #   generate a jump table)
                 # - we have at least 10 more instructions to go in this function (otherwise our
                 #   function size computation will be wrong since the delay slot goes unused)
-                jtbl_size = 11 if state.mips1 else 9
                 if (not needs_double and state.use_jtbl_for_rodata and i >= 1 and
                         size - i >= 5 and num_instr - len(late_rodata_fn_output) >= jtbl_size + 1):
                     cases = " ".join("case {}:".format(case) for case in range(size - i))
                     late_rodata_fn_output.append("switch (*(volatile int*)0) { " + cases + " ; }")
                     late_rodata_fn_output.extend([""] * (jtbl_size - 1))
                     jtbl_rodata_size = (size - i) * 4
-                    extra_mips1_nop = True
+                    extra_mips1_nop = i != 2
                     break
                 dummy_bytes = state.next_late_rodata_hex()
                 late_rodata_dummy_bytes.append(dummy_bytes)
