@@ -20,4 +20,4 @@ if [[ -z "$ISET" ]]; then
 fi
 
 python3 asm_processor.py $OPTFLAGS $ISET "$INPUT" | $CC -c $CFLAGS include-stdin.c -o "$OUTPUT" $OPTFLAGS
-python3 asm_processor.py $OPTFLAGS $ISET "$INPUT" --post-process "$OUTPUT" --assembler "$AS $ASFLAGS" --asm-prelude prelude.s
+python3 asm_processor.py $OPTFLAGS $ISET "$INPUT" --post-process "$OUTPUT" --assembler "$AS $ASFLAGS" --asm-prelude prelude.s --drop-mdebug-gptab

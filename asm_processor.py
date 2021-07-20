@@ -354,6 +354,12 @@ class ElfFile:
         s.late_init(self.sections)
         return s
 
+    def drop_mdebug_gptab(self):
+        # We can only drop sections at the end, since otherwise section
+        # references might be wrong. Luckily, these sections typically are.
+        while self.sections[-1].sh_type in [SHT_MIPS_DEBUG, SHT_MIPS_GPTAB]:
+            self.sections.pop()
+
     def write(self, filename):
         outfile = open(filename, 'wb')
         outidx = 0
@@ -878,7 +884,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -973,6 +979,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
             raise Failure("failed to assemble")
         with open(o_name, 'rb') as f:
             asm_objfile = ElfFile(f.read())
+
+        # Remove clutter from objdump output for tests, and make the tests
+        # portable by avoiding absolute paths. Outside of tests .mdebug is
+        # useful for showing source together with asm, though.
+        mdebug_section = objfile.find_section('.mdebug')
+        if drop_mdebug_gptab:
+            objfile.drop_mdebug_gptab()
 
         # Unify reginfo sections
         target_reginfo = objfile.find_section('.reginfo')
@@ -1102,7 +1115,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 new_global_syms.append(s)
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
-        mdebug_section = objfile.find_section('.mdebug')
         local_sym_replacements = {}
         if mdebug_section:
             strtab_index = len(objfile.symtab.strtab.data)
@@ -1220,8 +1232,9 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
     parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
-    parser.add_argument('--input-enc', default='latin1', help="Input encoding (default: latin1)")
-    parser.add_argument('--output-enc', default='latin1', help="Output encoding (default: latin1)")
+    parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
+    parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
+    parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
@@ -1255,7 +1268,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:
