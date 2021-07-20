@@ -269,6 +269,43 @@ class Section:
         assert self.sh_type == SHT_SYMTAB
         return self.symbol_entries[self.sh_info:]
 
+    def relocate_mdebug(self, original_offset):
+        assert self.sh_type == SHT_MIPS_DEBUG
+        new_data = bytearray(self.data)
+        shift_by = self.sh_offset - original_offset
+
+        # Update the file-relative offsets in the Symbolic HDRR
+        hdrr_magic, hdrr_vstamp, hdrr_ilineMax, hdrr_cbLine, \
+            hdrr_cbLineOffset, hdrr_idnMax, hdrr_cbDnOffset, hdrr_ipdMax, \
+            hdrr_cbPdOffset, hdrr_isymMax, hdrr_cbSymOffset, hdrr_ioptMax, \
+            hdrr_cbOptOffset, hdrr_iauxMax, hdrr_cbAuxOffset, hdrr_issMax, \
+            hdrr_cbSsOffset, hdrr_issExtMax, hdrr_cbSsExtOffset, hdrr_ifdMax, \
+            hdrr_cbFdOffset, hdrr_crfd, hdrr_cbRfdOffset, hdrr_iextMax, \
+            hdrr_cbExtOffset = struct.unpack(">HHIIIIIIIIIIIIIIIIIIIIIII", self.data[0:0x60])
+
+        assert hdrr_magic == 0x7009 , "Invalid magic value for .mdebug symbolic header"
+
+        hdrr_cbLineOffset += shift_by
+        hdrr_cbDnOffset += shift_by
+        hdrr_cbPdOffset += shift_by
+        hdrr_cbSymOffset += shift_by
+        hdrr_cbOptOffset += shift_by
+        hdrr_cbAuxOffset += shift_by
+        hdrr_cbSsOffset += shift_by
+        hdrr_cbSsExtOffset += shift_by
+        hdrr_cbFdOffset += shift_by
+        hdrr_cbRfdOffset += shift_by
+        hdrr_cbExtOffset += shift_by
+
+        new_data[0:0x60] = struct.pack(">HHIIIIIIIIIIIIIIIIIIIIIII", hdrr_magic, hdrr_vstamp, hdrr_ilineMax, hdrr_cbLine, \
+            hdrr_cbLineOffset, hdrr_idnMax, hdrr_cbDnOffset, hdrr_ipdMax, \
+            hdrr_cbPdOffset, hdrr_isymMax, hdrr_cbSymOffset, hdrr_ioptMax, \
+            hdrr_cbOptOffset, hdrr_iauxMax, hdrr_cbAuxOffset, hdrr_issMax, \
+            hdrr_cbSsOffset, hdrr_issExtMax, hdrr_cbSsExtOffset, hdrr_ifdMax, \
+            hdrr_cbFdOffset, hdrr_crfd, hdrr_cbRfdOffset, hdrr_iextMax, \
+            hdrr_cbExtOffset)
+
+        self.data = bytes(new_data)
 
 class ElfFile:
     def __init__(self, data):
@@ -317,48 +354,6 @@ class ElfFile:
         s.late_init(self.sections)
         return s
 
-    def drop_irrelevant_sections(self):
-        # We can only drop sections at the end, since otherwise section
-        # references might be wrong. Luckily, these sections typically are.
-        while self.sections[-1].sh_type in [SHT_MIPS_GPTAB]:
-            self.sections.pop()
-
-    def relocate_mdebug(self, mdebug_section, original_offset):
-        new_data = bytearray(mdebug_section.data)
-        shift_by = mdebug_section.sh_offset - original_offset
-
-        # Update the file-relative offsets in the Symbolic HDRR
-        hdrr_magic, hdrr_vstamp, hdrr_ilineMax, hdrr_cbLine, \
-            hdrr_cbLineOffset, hdrr_idnMax, hdrr_cbDnOffset, hdrr_ipdMax, \
-            hdrr_cbPdOffset, hdrr_isymMax, hdrr_cbSymOffset, hdrr_ioptMax, \
-            hdrr_cbOptOffset, hdrr_iauxMax, hdrr_cbAuxOffset, hdrr_issMax, \
-            hdrr_cbSsOffset, hdrr_issExtMax, hdrr_cbSsExtOffset, hdrr_ifdMax, \
-            hdrr_cbFdOffset, hdrr_crfd, hdrr_cbRfdOffset, hdrr_iextMax, \
-            hdrr_cbExtOffset = struct.unpack(">HHIIIIIIIIIIIIIIIIIIIIIII", mdebug_section.data[0:0x60])
-
-        hdrr_cbLineOffset += shift_by
-        hdrr_cbDnOffset += shift_by
-        hdrr_cbPdOffset += shift_by
-        hdrr_cbSymOffset += shift_by
-        hdrr_cbOptOffset += shift_by
-        hdrr_cbAuxOffset += shift_by
-        hdrr_cbSsOffset += shift_by
-        hdrr_cbSsExtOffset += shift_by
-        hdrr_cbFdOffset += shift_by
-        hdrr_cbRfdOffset += shift_by
-        hdrr_cbExtOffset += shift_by
-
-        new_data[0:0x60] = struct.pack(">HHIIIIIIIIIIIIIIIIIIIIIII", hdrr_magic, hdrr_vstamp, hdrr_ilineMax, hdrr_cbLine, \
-            hdrr_cbLineOffset, hdrr_idnMax, hdrr_cbDnOffset, hdrr_ipdMax, \
-            hdrr_cbPdOffset, hdrr_isymMax, hdrr_cbSymOffset, hdrr_ioptMax, \
-            hdrr_cbOptOffset, hdrr_iauxMax, hdrr_cbAuxOffset, hdrr_issMax, \
-            hdrr_cbSsOffset, hdrr_issExtMax, hdrr_cbSsExtOffset, hdrr_ifdMax, \
-            hdrr_cbFdOffset, hdrr_crfd, hdrr_cbRfdOffset, hdrr_iextMax, \
-            hdrr_cbExtOffset)
-
-        mdebug_section.data = new_data
-        return mdebug_section
-
     def write(self, filename):
         outfile = open(filename, 'wb')
         outidx = 0
@@ -380,7 +375,7 @@ class ElfFile:
                 s.sh_offset = outidx
                 if s.sh_type == SHT_MIPS_DEBUG and s.sh_offset != old_offset:
                     # The .mdebug section has moved, relocate offsets
-                    s = self.relocate_mdebug(s, old_offset)
+                    s.relocate_mdebug(old_offset)
                 write_out(s.data)
 
         pad_out(4)
@@ -979,10 +974,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
         with open(o_name, 'rb') as f:
             asm_objfile = ElfFile(f.read())
 
-        # Remove some clutter from objdump output
-        mdebug_section = objfile.find_section('.mdebug')
-        objfile.drop_irrelevant_sections()
-
         # Unify reginfo sections
         target_reginfo = objfile.find_section('.reginfo')
         source_reginfo_data = list(asm_objfile.find_section('.reginfo').data)
@@ -1111,6 +1102,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc):
                 new_global_syms.append(s)
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
+        mdebug_section = objfile.find_section('.mdebug')
         local_sym_replacements = {}
         if mdebug_section:
             strtab_index = len(objfile.symtab.strtab.data)
