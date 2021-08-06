@@ -41,13 +41,13 @@ Reading assembly from file is also supported, e.g. `GLOBAL_ASM("file.s")`.
 
 ### What is supported?
 
-`.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, `.ascii`/`.asciz`, and `-g`, `-g3`, `-O1`, `-O2` and `-framepointer` flags to the IDO compiler.
+`.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, `.ascii`/`.asciz`, and `-g`, `-g3`, `-O1`, `-O2`, `-framepointer` and `-mips1`/`-mips2` flags to the IDO compiler.
 
 ### What is not supported?
 
 * complicated assembly (.ifdef, macro declarations/calls other than `glabel`, pseudo-instructions that expand to several real instructions)
 * non-IDO compilers
-* `-mips1` (`-mips3` may also not work fully)
+* `-O3` (due to function reordering)
 
 C `#ifdef`s only work outside of `GLOBAL_ASM` calls, but is otherwise able to replace `.ifdef`.
 
@@ -70,7 +70,7 @@ and for emitting C code of exact sizes for a bunch of different IDO compiler fla
 The assembler code is padded with nops to line it up with its correct position in the C;
 this allows C and asm ELF files to be merged easily without having to fix up e.g. symbol addresses.
 
-The most difficulty part is `late_rodata`, which is hard to create programmatically.
+The most difficult part is `late_rodata`, which is hard to create programmatically.
 asm-processor does that by emitting code that uses dummy float literals/double literals/jump tables,
 assembles the late_rodata at another location of the .rodata section, then overwrites the dummy rodata.
 This does require some movement of symbols and relocations, and quite a bit of care in what code to
