@@ -877,7 +877,14 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 print_source.write(line + '\n')
         else:
             for line in output_lines:
-                print_source.write(line.encode(output_enc) + b'\n')
+                try:
+                    line_encoded = line.encode(output_enc)
+                except UnicodeEncodeError:
+                    print("Failed to encode a line to", output_enc)
+                    print("The line:", line)
+                    print("The line, utf-8-encoded:", line.encode("utf-8"))
+                    raise
+                print_source.write(line_encoded + b'\n')
             print_source.flush()
             if print_source != sys.stdout.buffer:
                 print_source.close()
