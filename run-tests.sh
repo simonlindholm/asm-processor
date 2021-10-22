@@ -4,5 +4,5 @@ for A in tests/*.c; do
     if [[ -z "$OBJDUMPFLAGS" ]]; then
         OBJDUMPFLAGS="-s"
     fi
-    ./compile.sh "$A" && mips-linux-gnu-objdump $OBJDUMPFLAGS "${A%.c}.o" | diff - "${A%.c}.objdump" || echo FAIL "$A"
+    ./compile-test.sh "$A" && mips-linux-gnu-objdump $OBJDUMPFLAGS "${A%.c}.o" | diff - "${A%.c}.objdump" || echo FAIL "$A"
 done

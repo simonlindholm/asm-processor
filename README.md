@@ -35,9 +35,12 @@ nop
 )
 ```
 
-To compile the file, run `./compile.sh file.c`, or invoke the `asm_processor.py` script in a similar manner. (`compile.sh` is mostly just intended to describe example usage.)
+To compile the file, run `python3 build.py $CC -- $AS $ASFLAGS -- $CFLAGS -o out.o in.c`, where $CC points to an IDO binary (5.3/7.1 and recomp/qemu all supported), $AS is e.g. `mips-linux-gnu-as`, $ASFLAGS e.g. `-march=vr4300 -mabi=32` and $CFLAGS e.g. `-Wab,-r4300_mul -non_shared -G 0 -Xcpluscomm -g`. build.py may be customized as needed.
 
-Reading assembly from file is also supported, e.g. `GLOBAL_ASM("file.s")`.
+In addition to an .o file, build.py also generates a .d file with Makefile dependencies for .s files referenced by the input .c file.
+This functionality may be removed if not needed.
+
+Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")` or `#pragma GLOBAL_ASM("file.s")`.
 
 ### What is supported?
 
