@@ -105,11 +105,14 @@ class ElfHeader:
     } Elf32_Ehdr;
     """
 
-    def __init__(self, data):
+    def __init__(self, data, is_big_endian):
         self.e_ident = data[:EI_NIDENT]
-        self.e_type, self.e_machine, self.e_version, self.e_entry, self.e_phoff, self.e_shoff, self.e_flags, self.e_ehsize, self.e_phentsize, self.e_phnum, self.e_shentsize, self.e_shnum, self.e_shstrndx = struct.unpack('>HHIIIIIHHHHHH', data[EI_NIDENT:])
+        self.e_type, self.e_machine, self.e_version, self.e_entry, self.e_phoff, self.e_shoff, self.e_flags, self.e_ehsize, self.e_phentsize, self.e_phnum, self.e_shentsize, self.e_shnum, self.e_shstrndx = struct.unpack('<HHIIIIIHHHHHH', data[EI_NIDENT:])
         assert self.e_ident[EI_CLASS] == 1 # 32-bit
-        assert self.e_ident[EI_DATA] == 2 # big-endian
+        if is_big_endian:
+            assert self.e_ident[EI_DATA] == 2 # big-endian
+        else:
+             self.e_ident[EI_DATA] == 1 # little-endian
         assert self.e_type == 1 # relocatable
         assert self.e_machine == 8 # MIPS I Architecture
         assert self.e_phoff == 0 # no program header
@@ -117,7 +120,7 @@ class ElfHeader:
         assert self.e_shstrndx != SHN_UNDEF
 
     def to_bin(self):
-        return self.e_ident + struct.pack('>HHIIIIIHHHHHH', self.e_type,
+        return self.e_ident + struct.pack(endian_str(self.e_ident[EI_DATA] == 2) + 'HHIIIIIHHHHHH', self.e_type,
                 self.e_machine, self.e_version, self.e_entry, self.e_phoff,
                 self.e_shoff, self.e_flags, self.e_ehsize, self.e_phentsize,
                 self.e_phnum, self.e_shentsize, self.e_shnum, self.e_shstrndx)
@@ -136,7 +139,7 @@ class Symbol:
     """
 
     def __init__(self, data, strtab, name=None):
-        self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx = struct.unpack('>IIIBBH', data)
+        self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx = struct.unpack('<IIIBBH', data)
         assert self.st_shndx != SHN_XINDEX, "too many sections (SHN_XINDEX not supported)"
         self.bind = st_info >> 4
         self.type = st_info & 15
@@ -144,31 +147,31 @@ class Symbol:
         self.visibility = self.st_other & 3
 
     @staticmethod
-    def from_parts(st_name, st_value, st_size, st_info, st_other, st_shndx, strtab, name):
-        header = struct.pack('>IIIBBH', st_name, st_value, st_size, st_info, st_other, st_shndx)
+    def from_parts(st_name, st_value, st_size, st_info, st_other, st_shndx, strtab, name, is_big_endian):
+        header = struct.pack(endian_str(is_big_endian) + 'IIIBBH', st_name, st_value, st_size, st_info, st_other, st_shndx)
         return Symbol(header, strtab, name)
 
-    def to_bin(self):
+    def to_bin(self, is_big_endian):
         st_info = (self.bind << 4) | self.type
-        return struct.pack('>IIIBBH', self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx)
+        return struct.pack(endian_str(is_big_endian) + 'IIIBBH', self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx)
 
 
 class Relocation:
-    def __init__(self, data, sh_type):
+    def __init__(self, data, sh_type, is_big_endian):
         self.sh_type = sh_type
         if sh_type == SHT_REL:
-            self.r_offset, self.r_info = struct.unpack('>II', data)
+            self.r_offset, self.r_info = struct.unpack(endian_str(is_big_endian) + 'II', data)
         else:
-            self.r_offset, self.r_info, self.r_addend = struct.unpack('>III', data)
+            self.r_offset, self.r_info, self.r_addend = struct.unpack(endian_str(is_big_endian) + 'III', data)
         self.sym_index = self.r_info >> 8
         self.rel_type = self.r_info & 0xff
 
-    def to_bin(self):
+    def to_bin(self, is_big_endian):
         self.r_info = (self.sym_index << 8) | self.rel_type
         if self.sh_type == SHT_REL:
-            return struct.pack('>II', self.r_offset, self.r_info)
+            return struct.pack(endian_str(is_big_endian) + 'II', self.r_offset, self.r_info)
         else:
-            return struct.pack('>III', self.r_offset, self.r_info, self.r_addend)
+            return struct.pack(endian_str(is_big_endian) + 'III', self.r_offset, self.r_info, self.r_addend)
 
 
 class Section:
@@ -187,8 +190,8 @@ class Section:
     } Elf32_Shdr;
     """
 
-    def __init__(self, header, data, index):
-        self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize = struct.unpack('>IIIIIIIIII', header)
+    def __init__(self, header, data, index, is_big_endian):
+        self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize = struct.unpack(endian_str(is_big_endian) + 'IIIIIIIIII', header)
         assert not self.sh_flags & SHF_LINK_ORDER
         if self.sh_entsize != 0:
             assert self.sh_size % self.sh_entsize == 0
@@ -200,9 +203,9 @@ class Section:
         self.relocated_by = []
 
     @staticmethod
-    def from_parts(sh_name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data, index):
-        header = struct.pack('>IIIIIIIIII', sh_name, sh_type, sh_flags, 0, 0, len(data), sh_link, sh_info, sh_addralign, sh_entsize)
-        return Section(header, data, index)
+    def from_parts(sh_name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data, index, is_big_endian):
+        header = struct.pack(endian_str(is_big_endian) + 'IIIIIIIIII', sh_name, sh_type, sh_flags, 0, 0, len(data), sh_link, sh_info, sh_addralign, sh_entsize)
+        return Section(header, data, index, is_big_endian)
 
     def lookup_str(self, index):
         assert self.sh_type == SHT_STRTAB
@@ -219,18 +222,18 @@ class Section:
     def is_rel(self):
         return self.sh_type == SHT_REL or self.sh_type == SHT_RELA
 
-    def header_to_bin(self):
+    def header_to_bin(self, is_big_endian):
         if self.sh_type != SHT_NOBITS:
             self.sh_size = len(self.data)
-        return struct.pack('>IIIIIIIIII', self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize)
+        return struct.pack(endian_str(is_big_endian) + 'IIIIIIIIII', self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize)
 
-    def late_init(self, sections):
+    def late_init(self, sections, is_big_endian):
         if self.sh_type == SHT_SYMTAB:
             self.init_symbols(sections)
         elif self.is_rel():
             self.rel_target = sections[self.sh_info]
             self.rel_target.relocated_by.append(self)
-            self.init_relocs()
+            self.init_relocs(is_big_endian)
 
     def find_symbol(self, name):
         assert self.sh_type == SHT_SYMTAB
@@ -254,11 +257,11 @@ class Section:
             entries.append(Symbol(self.data[i:i+self.sh_entsize], self.strtab))
         self.symbol_entries = entries
 
-    def init_relocs(self):
+    def init_relocs(self, is_big_endian):
         assert self.is_rel()
         entries = []
         for i in range(0, self.sh_size, self.sh_entsize):
-            entries.append(Relocation(self.data[i:i+self.sh_entsize], self.sh_type))
+            entries.append(Relocation(self.data[i:i+self.sh_entsize], self.sh_type, is_big_endian))
         self.relocations = entries
 
     def local_symbols(self):
@@ -308,20 +311,20 @@ class Section:
         self.data = bytes(new_data)
 
 class ElfFile:
-    def __init__(self, data):
+    def __init__(self, data, is_big_endian):
         self.data = data
         assert data[:4] == b'\x7fELF', "not an ELF file"
 
-        self.elf_header = ElfHeader(data[0:52])
+        self.elf_header = ElfHeader(data[0:52], is_big_endian)
 
         offset, size = self.elf_header.e_shoff, self.elf_header.e_shentsize
-        null_section = Section(data[offset:offset + size], data, 0)
+        null_section = Section(data[offset:offset + size], data, 0, is_big_endian)
         num_sections = self.elf_header.e_shnum or null_section.sh_size
 
         self.sections = [null_section]
         for i in range(1, num_sections):
             ind = offset + i * size
-            self.sections.append(Section(data[ind:ind + size], data, i))
+            self.sections.append(Section(data[ind:ind + size], data, i, is_big_endian))
 
         symtab = None
         for s in self.sections:
@@ -334,7 +337,7 @@ class ElfFile:
         shstr = self.sections[self.elf_header.e_shstrndx]
         for s in self.sections:
             s.name = shstr.lookup_str(s.sh_name)
-            s.late_init(self.sections)
+            s.late_init(self.sections, is_big_endian)
 
     def find_section(self, name):
         for s in self.sections:
@@ -342,16 +345,16 @@ class ElfFile:
                 return s
         return None
 
-    def add_section(self, name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data):
+    def add_section(self, name, sh_type, sh_flags, sh_link, sh_info, sh_addralign, sh_entsize, data, is_big_endian):
         shstr = self.sections[self.elf_header.e_shstrndx]
         sh_name = shstr.add_str(name)
         s = Section.from_parts(sh_name=sh_name, sh_type=sh_type,
                 sh_flags=sh_flags, sh_link=sh_link, sh_info=sh_info,
                 sh_addralign=sh_addralign, sh_entsize=sh_entsize, data=data,
-                index=len(self.sections))
+                index=len(self.sections), is_big_endian=is_big_endian)
         self.sections.append(s)
         s.name = name
-        s.late_init(self.sections)
+        s.late_init(self.sections, is_big_endian)
         return s
 
     def drop_mdebug_gptab(self):
@@ -360,7 +363,7 @@ class ElfFile:
         while self.sections[-1].sh_type in [SHT_MIPS_DEBUG, SHT_MIPS_GPTAB]:
             self.sections.pop()
 
-    def write(self, filename):
+    def write(self, filename, is_big_endian):
         outfile = open(filename, 'wb')
         outidx = 0
         def write_out(data):
@@ -387,7 +390,7 @@ class ElfFile:
         pad_out(4)
         self.elf_header.e_shoff = outidx
         for s in self.sections:
-            write_out(s.header_to_bin())
+            write_out(s.header_to_bin(is_big_endian))
 
         outfile.seek(0)
         outfile.write(self.elf_header.to_bin())
@@ -431,8 +434,8 @@ class GlobalState:
         self.use_jtbl_for_rodata = use_jtbl_for_rodata
         self.mips1 = mips1
 
-    def next_late_rodata_hex(self):
-        dummy_bytes = struct.pack('>I', self.late_rodata_hex)
+    def next_late_rodata_hex(self, is_big_endian):
+        dummy_bytes = struct.pack(endian_str(is_big_endian) + 'I', self.late_rodata_hex)
         if (self.late_rodata_hex & 0xffff) == 0:
             # Avoid lui
             self.late_rodata_hex += 1
@@ -634,7 +637,7 @@ class GlobalAsmBlock:
         else:
             self.asm_conts.append(real_line)
 
-    def finish(self, state):
+    def finish(self, state, is_big_endian, do_big_function_codegen):
         src = [''] * (self.num_lines + 1)
         late_rodata_dummy_bytes = []
         jtbl_rodata_size = 0
@@ -675,12 +678,12 @@ class GlobalAsmBlock:
                     jtbl_rodata_size = (size - i) * 4
                     extra_mips1_nop = i != 2
                     break
-                dummy_bytes = state.next_late_rodata_hex()
+                dummy_bytes = state.next_late_rodata_hex(is_big_endian)
                 late_rodata_dummy_bytes.append(dummy_bytes)
                 if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
-                    dummy_bytes2 = state.next_late_rodata_hex()
+                    dummy_bytes2 = state.next_late_rodata_hex(is_big_endian)
                     late_rodata_dummy_bytes.append(dummy_bytes2)
-                    fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
+                    fval, = struct.unpack(endian_str(is_big_endian) + 'd', dummy_bytes + dummy_bytes2)
                     late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
                     skip_next = True
                     needs_double = False
@@ -690,7 +693,7 @@ class GlobalAsmBlock:
                         late_rodata_fn_output.append('')
                     extra_mips1_nop = False
                 else:
-                    fval, = struct.unpack('>f', dummy_bytes)
+                    fval, = struct.unpack(endian_str(is_big_endian) + 'f', dummy_bytes)
                     late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
                     extra_mips1_nop = True
                 late_rodata_fn_output.append('')
@@ -713,23 +716,25 @@ class GlobalAsmBlock:
             rodata_stack = late_rodata_fn_output[::-1]
             for (line, count) in self.fn_ins_inds:
                 for _ in range(count):
-                    if (fn_emitted > MAX_FN_SIZE and instr_count - tot_emitted > state.min_instr_count and
-                            (not rodata_stack or rodata_stack[-1])):
-                        # Don't let functions become too large. When a function reaches 284
-                        # instructions, and -O2 -framepointer flags are passed, the IRIX
-                        # compiler decides it is a great idea to start optimizing more.
-                        fn_emitted = 0
-                        fn_skipped = 0
-                        src[line] += ' }} void {}(void) {{ '.format(state.make_name('large_func'))
-                    if fn_skipped < state.skip_instr_count:
-                        fn_skipped += 1
-                        tot_skipped += 1
-                    elif rodata_stack:
-                        src[line] += rodata_stack.pop()
+                    if do_big_function_codegen:
+                        if (fn_emitted > MAX_FN_SIZE and instr_count - tot_emitted > state.min_instr_count and
+                                (not rodata_stack or rodata_stack[-1])):
+                            # Don't let functions become too large. When a function reaches 284
+                            # instructions, and -O2 -framepointer flags are passed, the IRIX
+                            # compiler decides it is a great idea to start optimizing more.
+                            fn_emitted = 0
+                            fn_skipped = 0
+                            src[line] += ' }} void {}(void) {{ '.format(state.make_name('large_func'))
                     else:
-                        src[line] += '*(volatile int*)0 = 0;'
-                    tot_emitted += 1
-                    fn_emitted += 1
+                        if fn_skipped < state.skip_instr_count:
+                            fn_skipped += 1
+                            tot_skipped += 1
+                        elif rodata_stack:
+                            src[line] += rodata_stack.pop()
+                        else:
+                            src[line] += '*(volatile int*)0 = 0;'
+                        tot_emitted += 1
+                        fn_emitted += 1
             if rodata_stack:
                 size = len(late_rodata_fn_output) // 3
                 available = instr_count - tot_skipped
@@ -775,7 +780,7 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, print_source=None):
+def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, print_source=None, is_big_endian = True, do_big_function_codegen = True):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -825,7 +830,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
         if global_asm is not None:
             if line.startswith(')'):
-                src, fn = global_asm.finish(state)
+                src, fn = global_asm.finish(state, is_big_endian, do_big_function_codegen)
                 for i, line2 in enumerate(src):
                     output_lines[start_index + i] = line2
                 asm_functions.append(fn)
@@ -844,7 +849,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 with open(fname, encoding=input_enc) as f:
                     for line2 in f:
                         global_asm.process_line(line2.rstrip(), output_enc)
-                src, fn = global_asm.finish(state)
+                src, fn = global_asm.finish(state, is_big_endian, do_big_function_codegen)
                 output_lines[-1] = ''.join(src)
                 asm_functions.append(fn)
                 global_asm = None
@@ -891,11 +896,17 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab):
+def endian_str(is_big_endian):
+    if is_big_endian:
+        return '>'
+    else:
+        return '<'
+
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, is_big_endian, do_big_function_codegen):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
-        objfile = ElfFile(f.read())
+        objfile = ElfFile(f.read(), is_big_endian)
 
     prev_locs = {
         '.text': 0,
@@ -985,7 +996,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         if ret != 0:
             raise Failure("failed to assemble")
         with open(o_name, 'rb') as f:
-            asm_objfile = ElfFile(f.read())
+            asm_objfile = ElfFile(f.read(), is_big_endian)
 
         # Remove clutter from objdump output for tests, and make the tests
         # portable by avoiding absolute paths. Outside of tests .mdebug is
@@ -996,11 +1007,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Unify reginfo sections
         target_reginfo = objfile.find_section('.reginfo')
-        source_reginfo_data = list(asm_objfile.find_section('.reginfo').data)
-        data = list(target_reginfo.data)
-        for i in range(20):
-            data[i] |= source_reginfo_data[i]
-        target_reginfo.data = bytes(data)
+        # For psyq converted objects this section will not exist
+        if target_reginfo is not None:
+            source_reginfo_data = list(asm_objfile.find_section('.reginfo').data)
+            data = list(target_reginfo.data)
+            for i in range(20):
+                data[i] |= source_reginfo_data[i]
+            target_reginfo.data = bytes(data)
 
         # Move over section contents
         modified_text_positions = set()
@@ -1123,18 +1136,19 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         local_sym_replacements = {}
+        mdebug_section = None
         if mdebug_section:
             strtab_index = len(objfile.symtab.strtab.data)
             new_strtab_data = []
-            ifd_max, cb_fd_offset = struct.unpack('>II', mdebug_section.data[18*4 : 20*4])
-            cb_sym_offset, = struct.unpack('>I', mdebug_section.data[9*4 : 10*4])
-            cb_ss_offset, = struct.unpack('>I', mdebug_section.data[15*4 : 16*4])
+            ifd_max, cb_fd_offset = struct.unpack(endian_str(is_big_endian) + 'II', mdebug_section.data[18*4 : 20*4])
+            cb_sym_offset, = struct.unpack(endian_str(is_big_endian) + 'I', mdebug_section.data[9*4 : 10*4])
+            cb_ss_offset, = struct.unpack(endian_str(is_big_endian) + 'I', mdebug_section.data[15*4 : 16*4])
             for i in range(ifd_max):
                 offset = cb_fd_offset + 18*4*i
-                iss_base, _, isym_base, csym = struct.unpack('>IIII', objfile.data[offset + 2*4 : offset + 6*4])
+                iss_base, _, isym_base, csym = struct.unpack(endian_str(is_big_endian) + 'IIII', objfile.data[offset + 2*4 : offset + 6*4])
                 for j in range(csym):
                     offset2 = cb_sym_offset + 12 * (isym_base + j)
-                    iss, value, st_sc_index = struct.unpack('>III', objfile.data[offset2 : offset2 + 12])
+                    iss, value, st_sc_index = struct.unpack(endian_str(is_big_endian) + 'III', objfile.data[offset2 : offset2 + 12])
                     st = (st_sc_index >> 26)
                     sc = (st_sc_index >> 21) & 0x1f
                     if st in [MIPS_DEBUG_ST_STATIC, MIPS_DEBUG_ST_STATIC_PROC]:
@@ -1174,7 +1188,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         new_syms = new_local_syms + new_global_syms
         for i, s in enumerate(new_syms):
             s.new_index = i
-        objfile.symtab.data = b''.join(s.to_bin() for s in new_syms)
+        objfile.symtab.data = b''.join(s.to_bin(is_big_endian) for s in new_syms)
         objfile.symtab.sh_info = len(new_local_syms)
 
         # Move over relocations
@@ -1196,7 +1210,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
                         nrels.append(rel)
                     reltab.relocations = nrels
-                    reltab.data = b''.join(rel.to_bin() for rel in nrels)
+                    reltab.data = b''.join(rel.to_bin(is_big_endian) for rel in nrels)
 
             if not source:
                 continue
@@ -1208,13 +1222,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
                     if sectype == '.rodata' and rel.r_offset in moved_late_rodata:
                         rel.r_offset = moved_late_rodata[rel.r_offset]
-                new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
+                new_data = b''.join(rel.to_bin(is_big_endian) for rel in reltab.relocations)
                 if reltab.sh_type == SHT_REL:
                     if not target_reltab:
                         target_reltab = objfile.add_section('.rel' + sectype,
                                 sh_type=SHT_REL, sh_flags=0,
                                 sh_link=objfile.symtab.index, sh_info=target.index,
-                                sh_addralign=4, sh_entsize=8, data=b'')
+                                sh_addralign=4, sh_entsize=8, data=b'', is_big_endian=is_big_endian)
                     target_reltab.data += new_data
                 else:
                     if not target_reltaba:
@@ -1224,7 +1238,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                                 sh_addralign=4, sh_entsize=12, data=b'')
                     target_reltaba.data += new_data
 
-        objfile.write(objfile_name)
+        objfile.write(objfile_name, is_big_endian)
     finally:
         s_file.close()
         os.remove(s_name)
@@ -1245,6 +1259,8 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
+    parser.add_argument('--small-endian', dest='is_big_endian', action='store_false', default=True)
+    parser.add_argument('--disable-big-function-codegen', dest='do_big_function_codegen', action='store_false', default=True)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-O1', dest='opt', action='store_const', const='O1')
     group.add_argument('-O2', dest='opt', action='store_const', const='O2')
@@ -1275,7 +1291,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.is_big_endian, args.do_big_function_codegen)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:
