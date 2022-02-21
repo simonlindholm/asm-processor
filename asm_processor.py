@@ -813,6 +813,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
     ]
 
     is_cutscene_data = False
+    is_early_include = False
 
     for line_no, raw_line in enumerate(f, 1):
         raw_line = raw_line.rstrip()
@@ -848,11 +849,17 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 output_lines[-1] = ''.join(src)
                 asm_functions.append(fn)
                 global_asm = None
-            elif line.startswith('#include "') and line.endswith('" EARLY'):
-                # C includes qualified with EARLY (i.e. #include "file.c" EARLY) will be
-                # processed recursively when encountered
+            elif line == '#pragma INCLUDE_EARLY':
+                # C includes qualified as
+                # #pragma INCLUDE_EARLY
+                # #include "file.c"
+                # will be processed recursively when encountered
+                is_early_include = True
+            elif is_early_include:
+                # Previous line was a #pragma INCLUDE_EARLY
+                is_early_include = False
                 fpath = os.path.dirname(f.name)
-                fname = os.path.join(fpath, line[line.index(' ') + 2 : -7])
+                fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
                 out_dependencies.append(fname)
                 include_src = StringIO()
                 with open(fname, encoding=input_enc) as include_file:
