@@ -849,15 +849,17 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 output_lines[-1] = ''.join(src)
                 asm_functions.append(fn)
                 global_asm = None
-            elif line == '#pragma INCLUDE_EARLY':
+            elif line == '#pragma asmproc recurse':
                 # C includes qualified as
-                # #pragma INCLUDE_EARLY
+                # #pragma asmproc recurse
                 # #include "file.c"
                 # will be processed recursively when encountered
                 is_early_include = True
             elif is_early_include:
-                # Previous line was a #pragma INCLUDE_EARLY
+                # Previous line was a #pragma asmproc recurse
                 is_early_include = False
+                if not line.startswith("#include "):
+                    raise Failure("#pragma asmproc recurse must be followed by an #include ")
                 fpath = os.path.dirname(f.name)
                 fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
                 out_dependencies.append(fname)
