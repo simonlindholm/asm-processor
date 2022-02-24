@@ -833,56 +833,50 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 global_asm = None
             else:
                 global_asm.process_line(raw_line, output_enc)
-            continue
-
-        if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
-            global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
-            start_index = len(output_lines)
-            continue
-        elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
-                and line.endswith('")')):
-            fname = line[line.index('(') + 2 : -2]
-            out_dependencies.append(fname)
-            global_asm = GlobalAsmBlock(fname)
-            with open(fname, encoding=input_enc) as f:
-                for line2 in f:
-                    global_asm.process_line(line2.rstrip(), output_enc)
-            src, fn = global_asm.finish(state)
-            output_lines[-1] = ''.join(src)
-            asm_functions.append(fn)
-            global_asm = None
-            continue
-
-        if line == '#pragma INCLUDE_EARLY':
-            # C includes qualified as
-            # #pragma INCLUDE_EARLY
-            # #include "file.c"
-            # will be processed recursively when encountered
-            is_early_include = True
-            continue
-        elif is_early_include:
-            # Previous line was a #pragma INCLUDE_EARLY
-            is_early_include = False
-            fpath = os.path.dirname(f.name)
-            fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
-            out_dependencies.append(fname)
-            include_src = StringIO()
-            with open(fname, encoding=input_enc) as include_file:
-                parse_source(include_file, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, include_src)
-            include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
-            output_lines[-1] = include_src.getvalue()
-            include_src.close()
-            continue
-
-        # This is a hack to replace all floating-point numbers in an array of a particular type
-        # (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
-        if cutscene_data_regexpr.search(line) is not None:
-            is_cutscene_data = True
-        elif line.endswith("};"):
-            is_cutscene_data = False
-        if is_cutscene_data:
-            raw_line = re.sub(float_regexpr, repl_float_hex, raw_line)
-        output_lines[-1] = raw_line
+        else:
+            if line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
+                global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
+                start_index = len(output_lines)
+            elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
+                    and line.endswith('")')):
+                fname = line[line.index('(') + 2 : -2]
+                out_dependencies.append(fname)
+                global_asm = GlobalAsmBlock(fname)
+                with open(fname, encoding=input_enc) as f:
+                    for line2 in f:
+                        global_asm.process_line(line2.rstrip(), output_enc)
+                src, fn = global_asm.finish(state)
+                output_lines[-1] = ''.join(src)
+                asm_functions.append(fn)
+                global_asm = None
+            elif line == '#pragma INCLUDE_EARLY':
+                # C includes qualified as
+                # #pragma INCLUDE_EARLY
+                # #include "file.c"
+                # will be processed recursively when encountered
+                is_early_include = True
+            elif is_early_include:
+                # Previous line was a #pragma INCLUDE_EARLY
+                is_early_include = False
+                fpath = os.path.dirname(f.name)
+                fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
+                out_dependencies.append(fname)
+                include_src = StringIO()
+                with open(fname, encoding=input_enc) as include_file:
+                    parse_source(include_file, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, include_src)
+                include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
+                output_lines[-1] = include_src.getvalue()
+                include_src.close()
+            else:
+                # This is a hack to replace all floating-point numbers in an array of a particular type
+                # (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
+                if cutscene_data_regexpr.search(line) is not None:
+                    is_cutscene_data = True
+                elif line.endswith("};"):
+                    is_cutscene_data = False
+                if is_cutscene_data:
+                    raw_line = re.sub(float_regexpr, repl_float_hex, raw_line)
+                output_lines[-1] = raw_line
 
     if print_source:
         if isinstance(print_source, StringIO):
