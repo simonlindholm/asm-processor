@@ -783,6 +783,13 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
         else:
             min_instr_count = 2
             skip_instr_count = 1
+    elif opt == 'O0':
+        if framepointer:
+            min_instr_count = 8
+            skip_instr_count = 8
+        else:
+            min_instr_count = 4
+            skip_instr_count = 4
     elif opt == 'g':
         if framepointer:
             min_instr_count = 7
@@ -792,7 +799,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
             skip_instr_count = 4
     else:
         if opt != 'g3':
-            raise Failure("must pass one of -g, -O1, -O2, -O2 -g3")
+            raise Failure("must pass one of -g, -O0, -O1, -O2, -O2 -g3")
         if framepointer:
             min_instr_count = 4
             skip_instr_count = 4
@@ -1254,6 +1261,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('-O0', dest='opt', action='store_const', const='O0')
     group.add_argument('-O1', dest='opt', action='store_const', const='O1')
     group.add_argument('-O2', dest='opt', action='store_const', const='O2')
     group.add_argument('-g', dest='opt', action='store_const', const='g')
