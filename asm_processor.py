@@ -476,6 +476,7 @@ class GlobalAsmBlock:
     def count_quoted_size(self, line, z, real_line, output_enc):
         line = line.encode(output_enc).decode('latin1')
         in_quote = False
+        has_comma = True
         num_parts = 0
         ret = 0
         i = 0
@@ -486,10 +487,15 @@ class GlobalAsmBlock:
             if not in_quote:
                 if c == '"':
                     in_quote = True
+                    if z and not has_comma:
+                        self.fail(".asciiz with glued strings is not supported due to GNU as version diffs")
                     num_parts += 1
+                elif c == ',':
+                    has_comma = True
             else:
                 if c == '"':
                     in_quote = False
+                    has_comma = False
                     continue
                 ret += 1
                 if c != '\\':
