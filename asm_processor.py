@@ -925,8 +925,6 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
                 print_source.write(line_encoded)
                 print_source.write(newline_encoded)
             print_source.flush()
-            if print_source != sys.stdout.buffer:
-                print_source.close()
 
     return asm_functions
 
