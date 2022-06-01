@@ -108,5 +108,3 @@ Or using [qemu-irix](https://github.com/zeldaret/oot/releases/tag/0.1q) (don't f
 ```sh
 MIPS_CC='./qemu-irix -silent -L ../oot/tools/ido5.3_compiler/ ../oot/tools/ido5.3_compiler/usr/bin/cc' ./run-tests.sh
 ```
-
-Using `qemu-irix` may yield `qemu: Unsupported syscall: sgisysinfo(106)` messages, which seem harmless.
