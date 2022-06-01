@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
         functions=functions,
     )
 
-    deps_file = out_file.with_stem(".asmproc.d")
+    deps_file = out_file.with_suffix(".asmproc.d")
     if deps:
         with deps_file.open("w") as f:
             f.write(str(out_file) + ": " + " \\\n    ".join(deps) + "\n")
