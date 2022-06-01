@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import asm_processor
 
+keep_preprocessed_files = False
+
 dir_path = Path(__file__).resolve().parent
 asm_prelude_path = dir_path / "prelude.inc"
 
@@ -55,6 +57,18 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
 
     with preprocessed_path.open("wb") as f:
         functions, deps = asm_processor.run(asmproc_flags, outfile=f)
+
+    if keep_preprocessed_files:
+        import shutil
+        import uuid
+
+        keep_output_dir = Path("./asm_processor_preprocessed")
+        keep_output_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy(
+            preprocessed_path,
+            keep_output_dir / (in_file.stem + "__" + uuid.uuid4().hex + ".c"),
+        )
 
     compile_cmdline = (
         compiler
