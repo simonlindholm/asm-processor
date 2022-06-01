@@ -106,7 +106,7 @@ MIPS_CC=../oot/tools/ido_recomp/linux/5.3/cc ./run-tests.sh
 Or using [qemu-irix](https://github.com/zeldaret/oot/releases/tag/0.1q) (don't forget `chmod u+x qemu-irix`) to emulate IDO:
 
 ```sh
-MIPS_CC='./qemu-irix -L ../oot/tools/ido5.3_compiler/ ../oot/tools/ido5.3_compiler/usr/bin/cc' ./run-tests.sh
+MIPS_CC='./qemu-irix -silent -L ../oot/tools/ido5.3_compiler/ ../oot/tools/ido5.3_compiler/usr/bin/cc' ./run-tests.sh
 ```
 
 Using `qemu-irix` may yield `qemu: Unsupported syscall: sgisysinfo(106)` messages, which seem harmless.
