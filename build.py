@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     compile_cmdline = (
         compiler
         + compile_args
-        + ["-I", in_dir, "-o", str(out_file), str(preprocessed_path)]
+        + ["-I", str(in_dir), "-o", str(out_file), str(preprocessed_path)]
     )
 
     try:
