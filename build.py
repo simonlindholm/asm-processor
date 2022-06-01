@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import asm_processor
 
+# Boolean for debugging purposes
+# Preprocessed files are temporary, set to True to keep a copy
 keep_preprocessed_files = False
 
 dir_path = Path(__file__).resolve().parent
