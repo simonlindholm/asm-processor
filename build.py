@@ -4,6 +4,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import uuid
 import asm_processor
 
 # Boolean for debugging purposes
@@ -55,21 +56,21 @@ asmproc_flags += opt_flags + [str(in_file)]
 
 with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     tmpdir_path = Path(tmpdirname)
-    preprocessed_path = tmpdir_path / "preprocessed.c"
+    preprocessed_filename = "preprocessed_" + uuid.uuid4().hex + ".c"
+    preprocessed_path = tmpdir_path / preprocessed_filename
 
     with preprocessed_path.open("wb") as f:
         functions, deps = asm_processor.run(asmproc_flags, outfile=f)
 
     if keep_preprocessed_files:
         import shutil
-        import uuid
 
         keep_output_dir = Path("./asm_processor_preprocessed")
         keep_output_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.copy(
             preprocessed_path,
-            keep_output_dir / (in_file.stem + "__" + uuid.uuid4().hex + ".c"),
+            keep_output_dir / (in_file.stem + "_" + preprocessed_filename),
         )
 
     compile_cmdline = (
