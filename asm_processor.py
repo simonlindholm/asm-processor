@@ -1034,11 +1034,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Unify reginfo sections
         target_reginfo = objfile.find_section('.reginfo')
-        source_reginfo_data = list(asm_objfile.find_section('.reginfo').data)
-        data = list(target_reginfo.data)
-        for i in range(20):
-            data[i] |= source_reginfo_data[i]
-        target_reginfo.data = bytes(data)
+        if target_reginfo is not None:
+            source_reginfo_data = list(asm_objfile.find_section('.reginfo').data)
+            data = list(target_reginfo.data)
+            for i in range(20):
+                data[i] |= source_reginfo_data[i]
+            target_reginfo.data = bytes(data)
 
         # Move over section contents
         modified_text_positions = set()
