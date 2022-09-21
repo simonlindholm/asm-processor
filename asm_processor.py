@@ -928,7 +928,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, make_statics_global):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -1160,6 +1160,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 new_local_syms.append(s)
             else:
                 new_global_syms.append(s)
+        num_local_syms = len(new_local_syms)
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         local_sym_replacements = {}
@@ -1186,12 +1187,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         section_name = {1: '.text', 2: '.data', 3: '.bss', 15: '.rodata'}[sc]
                         section = objfile.find_section(section_name)
                         symtype = STT_FUNC if sc == 1 else STT_OBJECT
+                        binding = STB_GLOBAL if make_statics_global else STB_LOCAL
                         sym = Symbol.from_parts(
                             fmt,
                             st_name=strtab_index,
                             st_value=value,
                             st_size=0,
-                            st_info=(STB_LOCAL << 4 | symtype),
+                            st_info=(binding << 4 | symtype),
                             st_other=STV_DEFAULT,
                             st_shndx=section.index,
                             strtab=objfile.symtab.strtab,
@@ -1211,12 +1213,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             else:
                 newer_global_syms.append(s)
         new_global_syms = newer_global_syms
-
+        if not make_statics_global:
+            num_local_syms = len(new_local_syms)
         new_syms = new_local_syms + new_global_syms
         for i, s in enumerate(new_syms):
             s.new_index = i
         objfile.symtab.data = b''.join(s.to_bin() for s in new_syms)
-        objfile.symtab.sh_info = len(new_local_syms)
+        objfile.symtab.sh_info = num_local_syms
 
         # Move over relocations
         for sectype in SECTIONS:
@@ -1283,6 +1286,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
+    parser.add_argument('--make-statics-global', dest='make_statics_global', action='store_true', help="make static symbols global")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
@@ -1317,7 +1321,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.make_statics_global)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:

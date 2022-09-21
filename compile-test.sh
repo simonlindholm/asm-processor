@@ -10,6 +10,7 @@ CFLAGS="-Wab,-r4300_mul -non_shared -G 0 -Xcpluscomm -fullwarn -wlint -woff 819,
 AS="mips-linux-gnu-as"
 ASFLAGS="-march=vr4300 -mabi=32"
 OPTFLAGS=$(grep '^// COMPILE-FLAGS: ' $INPUT | sed 's#^// COMPILE-FLAGS: ##')
+ASMPFLAGS=$(grep '^// ASMP-FLAGS: ' $INPUT | sed 's#^// ASMP-FLAGS: ##')
 ISET=$(grep '^// COMPILE-ISET: ' $INPUT | sed 's#^// COMPILE-ISET: ##')
 if [[ -z "$OPTFLAGS" ]]; then
     OPTFLAGS="-g"
@@ -19,4 +20,4 @@ if [[ -z "$ISET" ]]; then
 fi
 
 set -e
-python3 build.py --drop-mdebug-gptab $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
+python3 build.py --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
