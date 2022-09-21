@@ -928,7 +928,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, make_statics_global):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, convert_statics):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -1161,10 +1161,11 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             else:
                 new_global_syms.append(s)
         num_local_syms = len(new_local_syms)
+        make_statics_global = convert_statics in ("global", "global-with-filename")
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         local_sym_replacements = {}
-        if mdebug_section:
+        if mdebug_section and convert_statics != "no":
             strtab_index = len(objfile.symtab.strtab.data)
             new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
@@ -1182,8 +1183,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         symbol_name_offset = cb_ss_offset + iss_base + iss
                         symbol_name_offset_end = objfile.data.find(b'\0', symbol_name_offset)
                         assert symbol_name_offset_end != -1
-                        symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end + 1]
-                        symbol_name_str = symbol_name[:-1].decode('latin1')
+                        orig_symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end + 1]
+                        symbol_name = orig_symbol_name
+                        if convert_statics == "global-with-filename":
+                            symbol_name = objfile_name.encode("utf-8") + b":" + orig_symbol_name
                         section_name = {1: '.text', 2: '.data', 3: '.bss', 15: '.rodata'}[sc]
                         section = objfile.find_section(section_name)
                         symtype = STT_FUNC if sc == 1 else STT_OBJECT
@@ -1197,8 +1200,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             st_other=STV_DEFAULT,
                             st_shndx=section.index,
                             strtab=objfile.symtab.strtab,
-                            name=symbol_name_str)
-                        local_sym_replacements[symbol_name_str] = len(new_local_syms)
+                            name=symbol_name[:-1].decode('latin1'))
+                        local_sym_replacements[orig_symbol_name[:-1].decode('latin1')] = len(new_local_syms)
                         strtab_index += len(symbol_name)
                         new_strtab_data.append(symbol_name)
                         new_local_syms.append(sym)
@@ -1286,7 +1289,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
-    parser.add_argument('--make-statics-global', dest='make_statics_global', action='store_true', help="make static symbols global")
+    parser.add_argument('--convert-statics', dest='convert_statics', choices=["no", "local", "global", "global-with-filename"], default="local", help="change static symbol visibility (default: %(default)s)")
     parser.add_argument('--force', dest='force', action='store_true', help="force processing of files without GLOBAL_ASM blocks")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
@@ -1322,7 +1325,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.make_statics_global)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.convert_statics)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:

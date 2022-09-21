@@ -1,6 +1,6 @@
 // COMPILE-FLAGS: -O2
 // OBJDUMP-FLAGS: -srt
-// ASMP-FLAGS: --make-statics-global
+// ASMP-FLAGS: --convert-statics=global
 static int xtext(int a, int b, int c);
 const int rodata1[] = {1};
 static const int rodata2[] = {2};
