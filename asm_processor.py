@@ -1287,6 +1287,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
     parser.add_argument('--make-statics-global', dest='make_statics_global', action='store_true', help="make static symbols global")
+    parser.add_argument('--force', dest='force', action='store_true', help="force processing of files without GLOBAL_ASM blocks")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
@@ -1315,7 +1316,7 @@ def run_wrapped(argv, outfile, functions):
         if functions is None:
             with open(args.filename, encoding=args.input_enc) as f:
                 functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, input_enc=args.input_enc, out_dependencies=[], output_enc=args.output_enc)
-        if not functions:
+        if not functions and not args.force:
             return
         asm_prelude = b''
         if args.asm_prelude:
