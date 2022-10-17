@@ -437,15 +437,17 @@ class Failure(Exception):
 
 
 class GlobalState:
-    def __init__(self, min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1):
+    def __init__(self, min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1, pascal):
         # A value that hopefully never appears as a 32-bit rodata constant (or we
         # miscompile late rodata). Increases by 1 in each step.
         self.late_rodata_hex = 0xE0123456
+        self.valuectr = 0
         self.namectr = 0
         self.min_instr_count = min_instr_count
         self.skip_instr_count = skip_instr_count
         self.use_jtbl_for_rodata = use_jtbl_for_rodata
         self.mips1 = mips1
+        self.pascal = pascal
 
     def next_late_rodata_hex(self):
         dummy_bytes = struct.pack('>I', self.late_rodata_hex)
@@ -459,6 +461,36 @@ class GlobalState:
         self.namectr += 1
         return '_asmpp_{}{}'.format(cat, self.namectr)
 
+    def func_prologue(self, name):
+        if self.pascal:
+            return " ".join([
+                "procedure {}();".format(name),
+                "type",
+                " pi = ^integer;",
+                " pf = ^single;",
+                " pd = ^double;",
+                "var",
+                " vi: pi;",
+                " vf: pf;",
+                " vd: pd;",
+                "begin",
+                " vi := vi;",
+                " vf := vf;",
+                " vd := vd;",
+            ])
+        else:
+            return 'void {}(void) {{'.format(name)
+
+    def func_epilogue(self):
+        if self.pascal:
+            return "end;"
+        else:
+            return "}"
+
+    def pascal_assignment(self, tp, val):
+        self.valuectr += 1
+        address = (8 * self.valuectr) & 0x7FFF
+        return 'v{} := p{}({}); v{}^ := {};'.format(tp, tp, address, tp, val)
 
 Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata_dummy_bytes', 'jtbl_rodata_size', 'late_rodata_asm_conts', 'fn_desc', 'data'])
 
@@ -673,7 +705,12 @@ class GlobalAsmBlock:
             skip_next = False
             needs_double = (self.late_rodata_alignment != 0)
             extra_mips1_nop = False
-            jtbl_size = 11 if state.mips1 else 9
+            if state.pascal:
+                jtbl_size = 9 if state.mips1 else 8
+                jtbl_min_rodata_size = 2
+            else:
+                jtbl_size = 11 if state.mips1 else 9
+                jtbl_min_rodata_size = 5
             for i in range(size):
                 if skip_next:
                     skip_next = False
@@ -690,9 +727,15 @@ class GlobalAsmBlock:
                 # - we have at least 10 more instructions to go in this function (otherwise our
                 #   function size computation will be wrong since the delay slot goes unused)
                 if (not needs_double and state.use_jtbl_for_rodata and i >= 1 and
-                        size - i >= 5 and num_instr - len(late_rodata_fn_output) >= jtbl_size + 1):
-                    cases = " ".join("case {}:".format(case) for case in range(size - i))
-                    late_rodata_fn_output.append("switch (*(volatile int*)0) { " + cases + " ; }")
+                        size - i >= jtbl_min_rodata_size and
+                        num_instr - len(late_rodata_fn_output) >= jtbl_size + 1):
+                    if state.pascal:
+                        cases = " ".join("{}: ;".format(case) for case in range(size - i))
+                        line = "case 0 of " + cases + " otherwise end;"
+                    else:
+                        cases = " ".join("case {}:".format(case) for case in range(size - i))
+                        line = "switch (*(volatile int*)0) { " + cases + " ; }"
+                    late_rodata_fn_output.append(line)
                     late_rodata_fn_output.extend([""] * (jtbl_size - 1))
                     jtbl_rodata_size = (size - i) * 4
                     extra_mips1_nop = i != 2
@@ -703,7 +746,11 @@ class GlobalAsmBlock:
                     dummy_bytes2 = state.next_late_rodata_hex()
                     late_rodata_dummy_bytes.append(dummy_bytes2)
                     fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
-                    late_rodata_fn_output.append('*(volatile double*)0 = {};'.format(fval))
+                    if state.pascal:
+                        line = state.pascal_assignment('d', fval)
+                    else:
+                        line = '*(volatile double*)0 = {};'.format(fval)
+                    late_rodata_fn_output.append(line)
                     skip_next = True
                     needs_double = False
                     if state.mips1:
@@ -713,7 +760,11 @@ class GlobalAsmBlock:
                     extra_mips1_nop = False
                 else:
                     fval, = struct.unpack('>f', dummy_bytes)
-                    late_rodata_fn_output.append('*(volatile float*)0 = {}f;'.format(fval))
+                    if state.pascal:
+                        line = state.pascal_assignment('f', fval)
+                    else:
+                        line = '*(volatile float*)0 = {}f;'.format(fval)
+                    late_rodata_fn_output.append(line)
                     extra_mips1_nop = True
                 late_rodata_fn_output.append('')
                 late_rodata_fn_output.append('')
@@ -723,8 +774,8 @@ class GlobalAsmBlock:
         text_name = None
         if self.fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
             text_name = state.make_name('func')
-            src[0] = 'void {}(void) {{'.format(text_name)
-            src[self.num_lines] = '}'
+            src[0] = state.func_prologue(text_name)
+            src[self.num_lines] = state.func_epilogue()
             instr_count = self.fn_section_sizes['.text'] // 4
             if instr_count < state.min_instr_count:
                 self.fail("too short .text block")
@@ -740,14 +791,19 @@ class GlobalAsmBlock:
                         # Don't let functions become too large. When a function reaches 284
                         # instructions, and -O2 -framepointer flags are passed, the IRIX
                         # compiler decides it is a great idea to start optimizing more.
+                        # Also, Pascal cannot handle too large functions before it runs out
+                        # of unique statements to write.
                         fn_emitted = 0
                         fn_skipped = 0
-                        src[line] += ' }} void {}(void) {{ '.format(state.make_name('large_func'))
+                        src[line] += (' ' + state.func_epilogue() + ' ' +
+                            state.func_prologue(state.make_name('large_func')) + ' ')
                     if fn_skipped < state.skip_instr_count:
                         fn_skipped += 1
                         tot_skipped += 1
                     elif rodata_stack:
                         src[line] += rodata_stack.pop()
+                    elif state.pascal:
+                        src[line] += state.pascal_assignment('i', '0')
                     else:
                         src[line] += '*(volatile int*)0 = 0;'
                     tot_emitted += 1
@@ -763,16 +819,24 @@ class GlobalAsmBlock:
 
         rodata_name = None
         if self.fn_section_sizes['.rodata'] > 0:
+            if state.pascal:
+                self.fail(".rodata isn't supported with Pascal for now")
             rodata_name = state.make_name('rodata')
             src[self.num_lines] += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'])
 
         data_name = None
         if self.fn_section_sizes['.data'] > 0:
             data_name = state.make_name('data')
-            src[self.num_lines] += ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
+            if state.pascal:
+                line = ' var {}: packed array[1..{}] of char := [otherwise: 0];'.format(data_name, self.fn_section_sizes['.data'])
+            else:
+                line = ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
+            src[self.num_lines] += line
 
         bss_name = None
         if self.fn_section_sizes['.bss'] > 0:
+            if state.pascal:
+                self.fail(".bss isn't supported with Pascal")
             bss_name = state.make_name('bss')
             src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
 
@@ -797,7 +861,7 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, print_source=None):
+def parse_source(f, opt, framepointer, mips1, pascal, input_enc, output_enc, out_dependencies, print_source=None):
     if opt in ['O2', 'O1']:
         if framepointer:
             min_instr_count = 6
@@ -833,7 +897,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
     if opt in ['O2', 'g3'] and not framepointer:
         use_jtbl_for_rodata = True
 
-    state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1)
+    state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1, pascal)
 
     global_asm = None
     asm_functions = []
@@ -893,7 +957,7 @@ def parse_source(f, opt, framepointer, mips1, input_enc, output_enc, out_depende
             out_dependencies.append(fname)
             include_src = StringIO()
             with open(fname, encoding=input_enc) as include_file:
-                parse_source(include_file, opt, framepointer, mips1, input_enc, output_enc, out_dependencies, include_src)
+                parse_source(include_file, opt, framepointer, mips1, pascal, input_enc, output_enc, out_dependencies, include_src)
             include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
             output_lines[-1] = include_src.getvalue()
             include_src.close()
@@ -1302,24 +1366,27 @@ def run_wrapped(argv, outfile, functions):
     group.add_argument('-g', dest='opt', action='store_const', const='g')
     args = parser.parse_args(argv)
     opt = args.opt
+    pascal = any(args.filename.endswith(ext) for ext in (".p", ".pas", ".pp"))
     if args.g3:
         if opt != 'O2':
             raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
     if args.mips1 and (opt != 'O2' or args.framepointer):
         raise Failure("-mips1 is only supported together with -O2")
+    if pascal and opt not in ('O2', 'g3'):
+        raise Failure("Pascal is only supported together with -O2 or -O2 -g3")
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
             deps = []
-            functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
+            functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, pascal=pascal, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
             return functions, deps
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
         if functions is None:
             with open(args.filename, encoding=args.input_enc) as f:
-                functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, input_enc=args.input_enc, out_dependencies=[], output_enc=args.output_enc)
+                functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, pascal=pascal, input_enc=args.input_enc, out_dependencies=[], output_enc=args.output_enc)
         if not functions and not args.force:
             return
         asm_prelude = b''
