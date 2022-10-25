@@ -39,7 +39,7 @@ del compile_args[out_ind]
 
 in_dir = in_file.resolve().parent
 opt_flags = [
-    x for x in compile_args if x in {"-g3", "-g", "-O0", "-O1", "-O2", "-framepointer"}
+    x for x in compile_args if x in {"-g3", "-g", "-O0", "-O1", "-O2", "-framepointer", "-KPIC"}
 ]
 if "-mips2" not in compile_args:
     opt_flags.append("-mips1")

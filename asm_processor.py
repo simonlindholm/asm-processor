@@ -437,7 +437,7 @@ class Failure(Exception):
 
 
 class GlobalState:
-    def __init__(self, min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1, pascal):
+    def __init__(self, min_instr_count, skip_instr_count, use_jtbl_for_rodata, prelude_if_late_rodata, mips1, pascal):
         # A value that hopefully never appears as a 32-bit rodata constant (or we
         # miscompile late rodata). Increases by 1 in each step.
         self.late_rodata_hex = 0xE0123456
@@ -446,6 +446,7 @@ class GlobalState:
         self.min_instr_count = min_instr_count
         self.skip_instr_count = skip_instr_count
         self.use_jtbl_for_rodata = use_jtbl_for_rodata
+        self.prelude_if_late_rodata = prelude_if_late_rodata
         self.mips1 = mips1
         self.pascal = pascal
 
@@ -783,6 +784,7 @@ class GlobalAsmBlock:
             tot_skipped = 0
             fn_emitted = 0
             fn_skipped = 0
+            skipping = True
             rodata_stack = late_rodata_fn_output[::-1]
             for (line, count) in self.fn_ins_inds:
                 for _ in range(count):
@@ -795,17 +797,24 @@ class GlobalAsmBlock:
                         # of unique statements to write.
                         fn_emitted = 0
                         fn_skipped = 0
+                        skipping = True
                         src[line] += (' ' + state.func_epilogue() + ' ' +
                             state.func_prologue(state.make_name('large_func')) + ' ')
-                    if fn_skipped < state.skip_instr_count:
+                    if (
+                        skipping and
+                        fn_skipped < state.skip_instr_count +
+                            (state.prelude_if_late_rodata if rodata_stack else 0)
+                    ):
                         fn_skipped += 1
                         tot_skipped += 1
-                    elif rodata_stack:
-                        src[line] += rodata_stack.pop()
-                    elif state.pascal:
-                        src[line] += state.pascal_assignment('i', '0')
                     else:
-                        src[line] += '*(volatile int*)0 = 0;'
+                        skipping = False
+                        if rodata_stack:
+                            src[line] += rodata_stack.pop()
+                        elif state.pascal:
+                            src[line] += state.pascal_assignment('i', '0')
+                        else:
+                            src[line] += '*(volatile int*)0 = 0;'
                     tot_emitted += 1
                     fn_emitted += 1
             if rodata_stack:
@@ -861,43 +870,55 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-def parse_source(f, opt, framepointer, mips1, pascal, input_enc, output_enc, out_dependencies, print_source=None):
-    if opt in ['O2', 'O1']:
-        if framepointer:
+Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc'])
+
+def parse_source(f, opts, out_dependencies, print_source=None):
+    if opts.opt in ['O2', 'O1']:
+        if opts.framepointer:
             min_instr_count = 6
             skip_instr_count = 5
         else:
             min_instr_count = 2
             skip_instr_count = 1
-    elif opt == 'O0':
-        if framepointer:
+    elif opts.opt == 'O0':
+        if opts.framepointer:
             min_instr_count = 8
             skip_instr_count = 8
         else:
             min_instr_count = 4
             skip_instr_count = 4
-    elif opt == 'g':
-        if framepointer:
+    elif opts.opt == 'g':
+        if opts.framepointer:
             min_instr_count = 7
             skip_instr_count = 7
         else:
             min_instr_count = 4
             skip_instr_count = 4
-    else:
-        if opt != 'g3':
-            raise Failure("must pass one of -g, -O0, -O1, -O2, -O2 -g3")
+    elif opts.opt == 'g3':
         if framepointer:
             min_instr_count = 4
             skip_instr_count = 4
         else:
             min_instr_count = 2
             skip_instr_count = 2
+    else:
+        raise Failure("must pass one of -g, -O0, -O1, -O2, -O2 -g3")
+    prelude_if_late_rodata = 0
+    if opts.kpic:
+        # Without optimizations, the PIC prelude always takes up 3 instructions.
+        # With optimizations, the prelude is optimized out if there's no late rodata.
+        if opts.opt in ('g3', 'O2'):
+            prelude_if_late_rodata = 3
+        else:
+            min_instr_count += 3
+            skip_instr_count += 3
 
     use_jtbl_for_rodata = False
-    if opt in ['O2', 'g3'] and not framepointer:
+    if opts.opt in ['O2', 'g3'] and not opts.framepointer and not opts.kpic:
         use_jtbl_for_rodata = True
 
-    state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata, mips1, pascal)
+    state = GlobalState(min_instr_count, skip_instr_count, use_jtbl_for_rodata, prelude_if_late_rodata, opts.mips1, opts.pascal)
+    output_enc = opts.output_enc
 
     global_asm = None
     asm_functions = []
@@ -934,7 +955,7 @@ def parse_source(f, opt, framepointer, mips1, pascal, input_enc, output_enc, out
             fname = line[line.index('(') + 2 : -2]
             out_dependencies.append(fname)
             global_asm = GlobalAsmBlock(fname)
-            with open(fname, encoding=input_enc) as f:
+            with open(fname, encoding=opts.input_enc) as f:
                 for line2 in f:
                     global_asm.process_line(line2.rstrip(), output_enc)
             src, fn = global_asm.finish(state)
@@ -956,8 +977,8 @@ def parse_source(f, opt, framepointer, mips1, pascal, input_enc, output_enc, out
             fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
             out_dependencies.append(fname)
             include_src = StringIO()
-            with open(fname, encoding=input_enc) as include_file:
-                parse_source(include_file, opt, framepointer, mips1, pascal, input_enc, output_enc, out_dependencies, include_src)
+            with open(fname, encoding=opts.input_enc) as include_file:
+                parse_source(include_file, opts, out_dependencies, include_src)
             include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
             output_lines[-1] = include_src.getvalue()
             include_src.close()
@@ -1036,6 +1057,11 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             loc = loc[1]
             prev_loc = prev_locs[sectype]
             if loc < prev_loc:
+                # If the dummy C generates too little asm, and we have two
+                # consecutive GLOBAL_ASM blocks, we detect that error here.
+                # On the other hand, if it generates too much, we don't have
+                # a good way of discovering that error: it's indistinguishable
+                # from a static symbol occurring after the GLOBAL_ASM block.
                 raise Failure("Wrongly computed size for section {} (diff {}). This is an asm-processor bug!".format(sectype, prev_loc- loc))
             if loc != prev_loc:
                 asm.append('.section ' + sectype)
@@ -1359,6 +1385,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
+    parser.add_argument('-KPIC', dest='kpic', action='store_true')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-O0', dest='opt', action='store_const', const='O0')
     group.add_argument('-O1', dest='opt', action='store_const', const='O1')
@@ -1375,18 +1402,19 @@ def run_wrapped(argv, outfile, functions):
         raise Failure("-mips1 is only supported together with -O2")
     if pascal and opt not in ('O2', 'g3'):
         raise Failure("Pascal is only supported together with -O2 or -O2 -g3")
+    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, args.output_enc)
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
             deps = []
-            functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, pascal=pascal, input_enc=args.input_enc, output_enc=args.output_enc, out_dependencies=deps, print_source=outfile)
+            functions = parse_source(f, opts, out_dependencies=deps, print_source=outfile)
             return functions, deps
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
         if functions is None:
             with open(args.filename, encoding=args.input_enc) as f:
-                functions = parse_source(f, opt=opt, framepointer=args.framepointer, mips1=args.mips1, pascal=pascal, input_enc=args.input_enc, out_dependencies=[], output_enc=args.output_enc)
+                functions = parse_source(f, opts, out_dependencies=[])
         if not functions and not args.force:
             return
         asm_prelude = b''
