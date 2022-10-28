@@ -1301,6 +1301,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         newer_syms = []
         name_to_sym = {}
         for s in new_syms:
+            if s.name == "_gp_disp":
+                s.type = STT_OBJECT
             if s.bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
                 raise Failure("local symbol \"" + s.name + "\" is undefined")
             if not s.name:
