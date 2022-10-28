@@ -1222,17 +1222,17 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         relocated_symbols.add(obj.symtab.symbol_entries[rel.sym_index])
 
         # Move over symbols, deleting the temporary function labels.
-        # Sometimes this naive procedure results in duplicate symbols, or UNDEF
-        # symbols that are also defined the same .o file. Hopefully that's fine.
-        # Skip over local symbols that aren't relocated against, to avoid
-        # conflicts.
-        new_local_syms = [s for s in objfile.symtab.local_symbols() if not is_temp_name(s.name)]
-        new_global_syms = [s for s in objfile.symtab.global_symbols() if not is_temp_name(s.name)]
+        # Skip over new local symbols that aren't relocated against, to
+        # avoid conflicts.
+        empty_symbol = objfile.symtab.symbol_entries[0]
+        new_syms = [s for s in objfile.symtab.symbol_entries[1:] if not is_temp_name(s.name)]
+
         for i, s in enumerate(asm_objfile.symtab.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
                 continue
             if is_temp_name(s.name):
+                assert s not in relocated_symbols
                 continue
             if s.st_shndx not in [SHN_UNDEF, SHN_ABS]:
                 section_name = asm_objfile.sections[s.st_shndx].name
@@ -1247,15 +1247,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
                     s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
-            if is_local:
-                new_local_syms.append(s)
-            else:
-                new_global_syms.append(s)
-        num_local_syms = len(new_local_syms)
+            new_syms.append(s)
         make_statics_global = convert_statics in ("global", "global-with-filename")
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
-        local_sym_replacements = {}
         if mdebug_section and convert_statics != "no":
             strtab_index = len(objfile.symtab.strtab.data)
             new_strtab_data = []
@@ -1274,10 +1269,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         symbol_name_offset = cb_ss_offset + iss_base + iss
                         symbol_name_offset_end = objfile.data.find(b'\0', symbol_name_offset)
                         assert symbol_name_offset_end != -1
-                        orig_symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end + 1]
-                        symbol_name = orig_symbol_name
+                        symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end + 1]
+                        emitted_symbol_name = symbol_name
                         if convert_statics == "global-with-filename":
-                            symbol_name = objfile_name.encode("utf-8") + b":" + orig_symbol_name
+                            # Change the emitted symbol name to include the filename,
+                            # but don't let that affect deduplication logic.
+                            emitted_symbol_name = objfile_name.encode("utf-8") + b":" + symbol_name
                         section_name = {1: '.text', 2: '.data', 3: '.bss', 15: '.rodata'}[sc]
                         section = objfile.find_section(section_name)
                         symtype = STT_FUNC if sc == 1 else STT_OBJECT
@@ -1292,26 +1289,46 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             st_shndx=section.index,
                             strtab=objfile.symtab.strtab,
                             name=symbol_name[:-1].decode('latin1'))
-                        local_sym_replacements[orig_symbol_name[:-1].decode('latin1')] = len(new_local_syms)
-                        strtab_index += len(symbol_name)
-                        new_strtab_data.append(symbol_name)
-                        new_local_syms.append(sym)
+                        strtab_index += len(emitted_symbol_name)
+                        new_strtab_data.append(emitted_symbol_name)
+                        new_syms.append(sym)
             objfile.symtab.strtab.data += b''.join(new_strtab_data)
 
-        # To get the linker to use the local symbols, we have to get rid of UNDEF
-        # global ones.
-        newer_global_syms = []
-        for s in new_global_syms:
-            if s.st_shndx == SHN_UNDEF and s.name in local_sym_replacements:
-                s.new_index = local_sym_replacements[s.name]
+        # Get rid of duplicate symbols, favoring ones that are not UNDEF.
+        # Skip this for unnamed local symbols though.
+        new_syms.sort(key=lambda s: 0 if s.st_shndx != SHN_UNDEF else 1)
+        old_syms = []
+        newer_syms = []
+        name_to_sym = {}
+        for s in new_syms:
+            if s.bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
+                raise Failure("local symbol \"" + s.name + "\" is undefined")
+            if not s.name:
+                if s.bind != STB_LOCAL:
+                    raise Failure("global symbol with no name")
+                newer_syms.append(s)
             else:
-                newer_global_syms.append(s)
-        new_global_syms = newer_global_syms
-        if not make_statics_global:
-            num_local_syms = len(new_local_syms)
-        new_syms = new_local_syms + new_global_syms
+                existing = name_to_sym.get(s.name)
+                if not existing:
+                    name_to_sym[s.name] = s
+                    newer_syms.append(s)
+                elif s.st_shndx != SHN_UNDEF:
+                    raise Failure("symbol \"" + s.name + "\" defined twice")
+                else:
+                    s.replace_by = existing
+                    old_syms.append(s)
+        new_syms = newer_syms
+
+        # Put local symbols in front, with the initial dummy entry first, and
+        # _gp_disp at the end if it exists.
+        new_syms.insert(0, empty_symbol)
+        new_syms.sort(key=lambda s: (s.bind != STB_LOCAL, s.name == "_gp_disp"))
+        num_local_syms = sum(1 for s in new_syms if s.bind == STB_LOCAL)
+
         for i, s in enumerate(new_syms):
             s.new_index = i
+        for s in old_syms:
+            s.new_index = s.replace_by.new_index
         objfile.symtab.data = b''.join(s.to_bin() for s in new_syms)
         objfile.symtab.sh_info = num_local_syms
 
@@ -1329,8 +1346,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             sectype == '.rodata' and rel.r_offset in jtbl_rodata_positions):
                             # don't include relocations for late_rodata dummy code
                             continue
-                        # hopefully we don't have relocations for local or
-                        # temporary symbols, so new_index exists
                         rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
                         nrels.append(rel)
                     reltab.relocations = nrels
