@@ -895,7 +895,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             min_instr_count = 4
             skip_instr_count = 4
     elif opts.opt == 'g3':
-        if framepointer:
+        if opts.framepointer:
             min_instr_count = 4
             skip_instr_count = 4
         else:
