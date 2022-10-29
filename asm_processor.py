@@ -629,7 +629,7 @@ class GlobalAsmBlock:
             changed_section = True
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
-        elif line.startswith('.word') or line.startswith('.float'):
+        elif line.startswith('.word') or line.startswith('.gpword') or line.startswith('.float'):
             self.align4()
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
