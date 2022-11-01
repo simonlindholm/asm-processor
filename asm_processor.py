@@ -1093,7 +1093,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
     if any(late_rodata_asm):
         late_rodata_source_name_start = '_asmpp_late_rodata_start'
         late_rodata_source_name_end = '_asmpp_late_rodata_end'
-        asm.append('.rdata')
+        asm.append('.section .late_rodata')
+        # Put some padding at the start to avoid conflating symbols with
+        # references to the whole section.
+        asm.append('.word 0, 0')
         asm.append('glabel {}'.format(late_rodata_source_name_start))
         for conts in late_rodata_asm:
             asm.extend(conts)
@@ -1166,7 +1169,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # of another way of doing it.
         moved_late_rodata = {}
         if any(all_late_rodata_dummy_bytes) or any(all_jtbl_rodata_size):
-            source = asm_objfile.find_section('.rodata')
+            source = asm_objfile.find_section('.late_rodata')
             target = objfile.find_section('.rodata')
             source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
             source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
@@ -1212,7 +1215,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Find relocated symbols
         relocated_symbols = set()
-        for sectype in SECTIONS:
+        for sectype in SECTIONS + ['.late_rodata']:
             for obj in [asm_objfile, objfile]:
                 sec = obj.find_section(sectype)
                 if sec is None:
@@ -1236,18 +1239,28 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 continue
             if s.st_shndx not in [SHN_UNDEF, SHN_ABS]:
                 section_name = asm_objfile.sections[s.st_shndx].name
-                if section_name not in SECTIONS:
-                    raise Failure("generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found " + section_name)
-                objfile_section = objfile.find_section(section_name)
+                target_section_name = section_name
+                if section_name == ".late_rodata":
+                    target_section_name = ".rodata"
+                elif section_name not in SECTIONS:
+                    raise Failure("generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found " + section_name)
+                objfile_section = objfile.find_section(target_section_name)
                 if objfile_section is None:
-                    raise Failure("generated assembly .o has section that real objfile lacks: " + section_name)
+                    raise Failure("generated assembly .o has section that real objfile lacks: " + target_section_name)
                 s.st_shndx = objfile_section.index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
                     s.type = STT_FUNC
                     if s.name in func_sizes:
                         s.st_size = func_sizes[s.name]
-                if objfile.sections[s.st_shndx].name == '.rodata' and s.st_value in moved_late_rodata:
+                if section_name == '.late_rodata':
+                    if s.st_value == 0:
+                        # This must be a symbol corresponding to the whole .late_rodata
+                        # section, being referred to from a relocation.
+                        # Moving local symbols is tricky, because it requires fixing up
+                        # lo16/hi16 relocation references to .late_rodata+<offset>.
+                        # Just disallow it for now.
+                        raise Failure("local symbols in .late_rodata are not allowed")
                     s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
             new_syms.append(s)
@@ -1337,9 +1350,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         objfile.symtab.data = b''.join(s.to_bin() for s in new_syms)
         objfile.symtab.sh_info = num_local_syms
 
-        # Move over relocations
+        # Fix up relocation symbol references
         for sectype in SECTIONS:
-            source = asm_objfile.find_section(sectype)
             target = objfile.find_section(sectype)
 
             if target is not None:
@@ -1356,27 +1368,33 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     reltab.relocations = nrels
                     reltab.data = b''.join(rel.to_bin() for rel in nrels)
 
-            if not source:
+        # Move over relocations
+        for sectype in SECTIONS + ['.late_rodata']:
+            source = asm_objfile.find_section(sectype)
+            if source is None or not source.data:
                 continue
 
-            target_reltab = objfile.find_section('.rel' + sectype)
-            target_reltaba = objfile.find_section('.rela' + sectype)
+            target_sectype = '.rodata' if sectype == '.late_rodata' else sectype
+            target = objfile.find_section(target_sectype)
+            assert target is not None, target_sectype
+            target_reltab = objfile.find_section('.rel' + target_sectype)
+            target_reltaba = objfile.find_section('.rela' + target_sectype)
             for reltab in source.relocated_by:
                 for rel in reltab.relocations:
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
-                    if sectype == '.rodata' and rel.r_offset in moved_late_rodata:
+                    if sectype == '.late_rodata':
                         rel.r_offset = moved_late_rodata[rel.r_offset]
                 new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
                 if reltab.sh_type == SHT_REL:
                     if not target_reltab:
-                        target_reltab = objfile.add_section('.rel' + sectype,
+                        target_reltab = objfile.add_section('.rel' + target_sectype,
                                 sh_type=SHT_REL, sh_flags=0,
                                 sh_link=objfile.symtab.index, sh_info=target.index,
                                 sh_addralign=4, sh_entsize=8, data=b'')
                     target_reltab.data += new_data
                 else:
                     if not target_reltaba:
-                        target_reltaba = objfile.add_section('.rela' + sectype,
+                        target_reltaba = objfile.add_section('.rela' + target_sectype,
                                 sh_type=SHT_RELA, sh_flags=0,
                                 sh_link=objfile.symtab.index, sh_info=target.index,
                                 sh_addralign=4, sh_entsize=12, data=b'')
