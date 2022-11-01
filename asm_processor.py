@@ -1238,7 +1238,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 section_name = asm_objfile.sections[s.st_shndx].name
                 if section_name not in SECTIONS:
                     raise Failure("generated assembly .o must only have symbols for .text, .data, .rodata, ABS and UNDEF, but found " + section_name)
-                s.st_shndx = objfile.find_section(section_name).index
+                objfile_section = objfile.find_section(section_name)
+                if objfile_section is None:
+                    raise Failure("generated assembly .o has section that real objfile lacks: " + section_name)
+                s.st_shndx = objfile_section.index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
                     s.type = STT_FUNC
