@@ -1,6 +1,17 @@
 
 tests/kpic-o2.o:     file format elf32-tradbigmips
 
+SYMBOL TABLE:
+00000000 l    d  .text	00000110 .text
+00000000 l    d  .rodata	00000050 .rodata
+00000000 g     F .text	00000030 foo
+00000030 g     F .text	00000048 float_fn
+00000078 g     F .text	00000098 doubles
+00000000       O *UND*	00000000 _gp_disp
+
+
+RELOCATION RECORDS FOR [.text]: (none)
+
 Contents of section .text:
  0000 24840001 24840002 24840003 24840004  $...$...$...$...
  0010 24840005 24840006 24840007 24840008  $...$...$...$...

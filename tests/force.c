@@ -1,5 +1,4 @@
 // COMPILE-FLAGS: -O2
-// OBJDUMP-FLAGS: -srt
 // ASMP-FLAGS: --convert-statics=global-with-filename --force
 static int xtext(int a, int b, int c);
 const int rodata1[] = {1};

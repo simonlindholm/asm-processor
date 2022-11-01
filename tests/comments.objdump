@@ -1,6 +1,12 @@
 
 tests/comments.o:     file format elf32-tradbigmips
 
+SYMBOL TABLE:
+00000000 l    d  .rodata	00000030 .rodata
+00000000 g     O .rodata	00000002 before
+00000024 g     O .rodata	00000002 after
+
+
 Contents of section .rodata:
  0000 5e000000 61616161 202f2a20 62626262  ^...aaaa /* bbbb
  0010 202a2f20 23206363 63630023 20666666   */ # cccc.# fff
