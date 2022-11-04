@@ -873,7 +873,7 @@ def repl_float_hex(m):
 Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc'])
 
 def parse_source(f, opts, out_dependencies, print_source=None):
-    if opts.opt in ['O2', 'O1']:
+    if opts.opt in ['O1', 'O2']:
         if opts.framepointer:
             min_instr_count = 6
             skip_instr_count = 5
@@ -1436,10 +1436,10 @@ def run_wrapped(argv, outfile, functions):
         if opt != 'O2':
             raise Failure("-g3 is only supported together with -O2")
         opt = 'g3'
-    if args.mips1 and (opt != 'O2' or args.framepointer):
-        raise Failure("-mips1 is only supported together with -O2")
-    if pascal and opt not in ('O2', 'g3'):
-        raise Failure("Pascal is only supported together with -O2 or -O2 -g3")
+    if args.mips1 and (opt not in ('O1', 'O2') or args.framepointer):
+        raise Failure("-mips1 is only supported together with -O1 or -O2")
+    if pascal and opt not in ('O1', 'O2', 'g3'):
+        raise Failure("Pascal is only supported together with -O1, -O2 or -O2 -g3")
     opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, args.output_enc)
 
     if args.objfile is None:
