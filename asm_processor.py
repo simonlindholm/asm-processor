@@ -1065,13 +1065,13 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 raise Failure("Wrongly computed size for section {} (diff {}). This is an asm-processor bug!".format(sectype, prev_loc- loc))
             if loc != prev_loc:
                 asm.append('.section ' + sectype)
-                if function.text_glabels and sectype == '.text':
+                if sectype == '.text':
                     for i in range((loc - prev_loc) // 4):
                         asm.append('nop')
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
             to_copy[sectype].append((loc, size, temp_name, function.fn_desc))
-            if sectype == '.text':
+            if function.text_glabels and sectype == '.text':
                 func_sizes[function.text_glabels[0]] = size
             prev_locs[sectype] = loc + size
         if not ifdefed:
