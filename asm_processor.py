@@ -605,7 +605,7 @@ class GlobalAsmBlock:
         line = re.sub(r'^[a-zA-Z0-9_]+:\s*', '', line)
         changed_section = False
         emitting_double = False
-        if line.startswith('glabel ') and self.cur_section == '.text':
+        if (line.startswith('glabel ') or line.startswith('jlabel ')) and self.cur_section == '.text':
             self.text_glabels.append(line.split()[1])
         if not line:
             pass # empty line
