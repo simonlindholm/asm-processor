@@ -669,6 +669,8 @@ class GlobalAsmBlock:
         elif line.startswith('.half') or line.startswith('.hword'):
             self.align2()
             self.add_sized(2*len(line.split(',')), real_line)
+        elif line.startswith('.size'):
+            pass
         elif line.startswith('.'):
             # .macro, ...
             self.fail("asm directive not supported", real_line)
