@@ -1020,7 +1020,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
 
     return asm_functions
 
-def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, convert_statics):
+def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, drop_mdebug_gptab, convert_statics, emit_marker_symbols):
     SECTIONS = ['.data', '.text', '.rodata', '.bss']
 
     with open(objfile_name, 'rb') as f:
@@ -1237,6 +1237,9 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         empty_symbol = objfile.symtab.symbol_entries[0]
         new_syms = [s for s in objfile.symtab.symbol_entries[1:] if not is_temp_name(s.name)]
 
+        strtab_index = len(objfile.symtab.strtab.data)
+        new_strtab_data = []
+
         for i, s in enumerate(asm_objfile.symtab.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
@@ -1271,12 +1274,18 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
             new_syms.append(s)
+            if emit_marker_symbols:
+                new_symbol_name = s.name + '.ASMPROC'
+                s = copy.copy(s)
+                s.name = new_symbol_name
+                s.st_name = strtab_index
+                strtab_index += len(new_symbol_name) + 1
+                new_strtab_data.append(new_symbol_name.encode('latin1') + b'\0')
+                new_syms.append(s)
         make_statics_global = convert_statics in ("global", "global-with-filename")
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         if mdebug_section and convert_statics != "no":
-            strtab_index = len(objfile.symtab.strtab.data)
-            new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
             cb_sym_offset, = fmt.unpack('I', mdebug_section.data[9*4 : 10*4])
             cb_ss_offset, = fmt.unpack('I', mdebug_section.data[15*4 : 16*4])
@@ -1315,7 +1324,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         strtab_index += len(emitted_symbol_name)
                         new_strtab_data.append(emitted_symbol_name)
                         new_syms.append(sym)
-            objfile.symtab.strtab.data += b''.join(new_strtab_data)
+
+        objfile.symtab.strtab.data += b''.join(new_strtab_data)
 
         # Get rid of duplicate symbols, favoring ones that are not UNDEF.
         # Skip this for unnamed local symbols though.
@@ -1426,6 +1436,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
     parser.add_argument('--convert-statics', dest='convert_statics', choices=["no", "local", "global", "global-with-filename"], default="local", help="change static symbol visibility (default: %(default)s)")
+    parser.add_argument('--emit-marker-symbols', dest='emit_marker_symbols', action='store_true', help="for each symbol defined in GLOBAL_ASM code, define a duplicate one with a .ASMPROC suffix")
     parser.add_argument('--force', dest='force', action='store_true', help="force processing of files without GLOBAL_ASM blocks")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
@@ -1466,7 +1477,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.convert_statics)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.convert_statics, args.emit_marker_symbols)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:
