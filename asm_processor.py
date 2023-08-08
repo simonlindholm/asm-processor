@@ -1237,6 +1237,26 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         empty_symbol = objfile.symtab.symbol_entries[0]
         new_syms = [s for s in objfile.symtab.symbol_entries[1:] if not is_temp_name(s.name)]
 
+        strtab_index = len(objfile.symtab.strtab.data)
+        new_strtab_data = []
+
+        fake_sym_name = '.ASMPROC'
+        new_syms.append(
+            Symbol.from_parts(
+                fmt,
+                st_name=strtab_index,
+                st_value=0,
+                st_size=0,
+                st_info=(STB_WEAK << 4 | STT_NOTYPE),
+                st_other=STV_DEFAULT,
+                st_shndx=SHN_ABS,
+                strtab=objfile.symtab.strtab,
+                name=fake_sym_name
+            )
+        )
+        strtab_index += len(fake_sym_name) + 1
+        new_strtab_data.append(fake_sym_name.encode('latin1') + b'\0')
+
         for i, s in enumerate(asm_objfile.symtab.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
@@ -1275,8 +1295,6 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         if mdebug_section and convert_statics != "no":
-            strtab_index = len(objfile.symtab.strtab.data)
-            new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
             cb_sym_offset, = fmt.unpack('I', mdebug_section.data[9*4 : 10*4])
             cb_ss_offset, = fmt.unpack('I', mdebug_section.data[15*4 : 16*4])
@@ -1315,7 +1333,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         strtab_index += len(emitted_symbol_name)
                         new_strtab_data.append(emitted_symbol_name)
                         new_syms.append(sym)
-            objfile.symtab.strtab.data += b''.join(new_strtab_data)
+
+        objfile.symtab.strtab.data += b''.join(new_strtab_data)
 
         # Get rid of duplicate symbols, favoring ones that are not UNDEF.
         # Skip this for unnamed local symbols though.
