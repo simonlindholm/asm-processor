@@ -1270,6 +1270,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         raise Failure("local symbols in .late_rodata are not allowed")
                     s.st_value = moved_late_rodata[s.st_value]
             s.st_name += strtab_adj
+            s.st_other |= 0x10
             new_syms.append(s)
         make_statics_global = convert_statics in ("global", "global-with-filename")
 
