@@ -2,7 +2,6 @@
 import argparse
 import tempfile
 import struct
-import copy
 import sys
 import re
 import os
@@ -82,7 +81,14 @@ R_MIPS_HI16 = 5
 R_MIPS_LO16 = 6
 
 MIPS_DEBUG_ST_STATIC = 2
+MIPS_DEBUG_ST_PROC = 6
+MIPS_DEBUG_ST_BLOCK = 7
+MIPS_DEBUG_ST_END = 8
+MIPS_DEBUG_ST_FILE = 11
 MIPS_DEBUG_ST_STATIC_PROC = 14
+MIPS_DEBUG_ST_STRUCT = 26
+MIPS_DEBUG_ST_UNION = 27
+MIPS_DEBUG_ST_ENUM = 28
 
 
 class ElfFormat:
@@ -1275,6 +1281,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
 
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         if mdebug_section and convert_statics != "no":
+            static_name_count = {}
             strtab_index = len(objfile.symtab.strtab.data)
             new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
@@ -1283,20 +1290,28 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             for i in range(ifd_max):
                 offset = cb_fd_offset + 18*4*i
                 iss_base, _, isym_base, csym = fmt.unpack('IIII', objfile.data[offset + 2*4 : offset + 6*4])
+                scope_level = 0
                 for j in range(csym):
                     offset2 = cb_sym_offset + 12 * (isym_base + j)
                     iss, value, st_sc_index = fmt.unpack('III', objfile.data[offset2 : offset2 + 12])
                     st = (st_sc_index >> 26)
                     sc = (st_sc_index >> 21) & 0x1f
-                    if st in [MIPS_DEBUG_ST_STATIC, MIPS_DEBUG_ST_STATIC_PROC]:
+                    if st in (MIPS_DEBUG_ST_STATIC, MIPS_DEBUG_ST_STATIC_PROC):
                         symbol_name_offset = cb_ss_offset + iss_base + iss
                         symbol_name_offset_end = objfile.data.find(b'\0', symbol_name_offset)
                         assert symbol_name_offset_end != -1
-                        symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end + 1]
+                        symbol_name = objfile.data[symbol_name_offset : symbol_name_offset_end]
+                        if scope_level > 1:
+                            # For in-function statics, append an increasing counter to
+                            # the name, to avoid duplicate conflicting symbols.
+                            count = static_name_count.get(symbol_name, 0) + 1
+                            static_name_count[symbol_name] = count
+                            symbol_name += b":" + str(count).encode("utf-8")
                         emitted_symbol_name = symbol_name
                         if convert_statics == "global-with-filename":
                             # Change the emitted symbol name to include the filename,
-                            # but don't let that affect deduplication logic.
+                            # but don't let that affect deduplication logic (we still
+                            # want to be able to reference statics from GLOBAL_ASM).
                             emitted_symbol_name = objfile_name.encode("utf-8") + b":" + symbol_name
                         section_name = {1: '.text', 2: '.data', 3: '.bss', 15: '.rodata'}[sc]
                         section = objfile.find_section(section_name)
@@ -1311,10 +1326,23 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             st_other=STV_DEFAULT,
                             st_shndx=section.index,
                             strtab=objfile.symtab.strtab,
-                            name=symbol_name[:-1].decode('latin1'))
-                        strtab_index += len(emitted_symbol_name)
-                        new_strtab_data.append(emitted_symbol_name)
+                            name=symbol_name.decode('latin1'))
+                        strtab_index += len(emitted_symbol_name) + 1
+                        new_strtab_data.append(emitted_symbol_name + b'\0')
                         new_syms.append(sym)
+                    if st in (
+                        MIPS_DEBUG_ST_FILE,
+                        MIPS_DEBUG_ST_STRUCT,
+                        MIPS_DEBUG_ST_UNION,
+                        MIPS_DEBUG_ST_ENUM,
+                        MIPS_DEBUG_ST_BLOCK,
+                        MIPS_DEBUG_ST_PROC,
+                        MIPS_DEBUG_ST_STATIC_PROC,
+                    ):
+                        scope_level += 1
+                    if st == MIPS_DEBUG_ST_END:
+                        scope_level -= 1
+                assert scope_level == 0
             objfile.symtab.strtab.data += b''.join(new_strtab_data)
 
         # Get rid of duplicate symbols, favoring ones that are not UNDEF.
