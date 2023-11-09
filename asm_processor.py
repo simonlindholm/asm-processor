@@ -965,7 +965,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             start_index = len(output_lines)
         elif (((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("')) and (line.endswith('")')))
                 or ((line.startswith('INCLUDE_ASM("') or line.startswith('INCLUDE_RODATA("')) and line.endswith(');'))):
-            if line.startswith('INCLUDE_'): # INCLUDE macro format is INCLUDE_ASM(folderpath, functionname);
+            if line.startswith('INCLUDE_'): # INCLUDE macro format is INCLUDE_ASM("folder", functionname);
                 spline = line.split(',')
                 fname = spline[0][spline[0].index('(') + 2 : -1] + "/" + spline[1][1:-2] + '.s'
             else: # GLOBAL macro format is GLOBAL_ASM(filepath)
