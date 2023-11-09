@@ -960,12 +960,16 @@ def parse_source(f, opts, out_dependencies, print_source=None):
                 global_asm = None
             else:
                 global_asm.process_line(raw_line, output_enc)
-        elif line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
+        elif line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(', 'INCLUDE_ASM(']:
             global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
             start_index = len(output_lines)
-        elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
-                and line.endswith('")')):
-            fname = line[line.index('(') + 2 : -2]
+        elif (((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("')) and (line.endswith('")')))
+                or ((line.startswith('INCLUDE_ASM("') or line.startswith('INCLUDE_RODATA("')) and line.endswith(');'))):
+            if line.startswith('INCLUDE_'): # INCLUDE macro format is INCLUDE_ASM(folderpath, functionname);
+                spline = line.split(',')
+                fname = spline[0][spline[0].index('(') + 2 : -1] + "/" + spline[1][1:-2] + '.s'
+            else: # GLOBAL macro format is GLOBAL_ASM(filepath)
+                fname = line[line.index('(') + 2 : -2]
             out_dependencies.append(fname)
             global_asm = GlobalAsmBlock(fname)
             with open(fname, encoding=opts.input_enc) as f:

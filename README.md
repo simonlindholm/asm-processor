@@ -40,7 +40,7 @@ To compile the file, run `python3 build.py $CC -- $AS $ASFLAGS -- $CFLAGS -o out
 In addition to an .o file, build.py also generates a .d file with Makefile dependencies for .s files referenced by the input .c file.
 This functionality may be removed if not needed.
 
-Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")` or `#pragma GLOBAL_ASM("file.s")`.
+Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")`, `#pragma GLOBAL_ASM("file.s")`, `INCLUDE_ASM("folder", functionname);`, or `INCLUDE_RODATA("folder", functionname);` (note the `;` on the include macros are required).
 
 ### What is supported?
 
