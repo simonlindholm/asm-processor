@@ -968,7 +968,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             if line.startswith('INCLUDE_'): # INCLUDE macro format is INCLUDE_ASM("folder", functionname);
                 spline = line.split(',')
                 fname = spline[0][spline[0].index('(') + 2 : -1] + "/" + spline[1][1:-2] + '.s'
-            else: # GLOBAL macro format is GLOBAL_ASM(filepath)
+            else: # GLOBAL macro format is GLOBAL_ASM("filepath")
                 fname = line[line.index('(') + 2 : -2]
             out_dependencies.append(fname)
             global_asm = GlobalAsmBlock(fname)
