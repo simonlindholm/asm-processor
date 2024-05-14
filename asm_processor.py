@@ -1096,14 +1096,14 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
-                    asm.append('dlabel ' + temp_name + '_asm_start')
+                    asm.append('glabel ' + temp_name + '_asm_start')
             asm.append('.text')
             for line in function.asm_conts:
                 asm.append(line)
             for sectype, (temp_name, size) in function.data.items():
                 if temp_name is not None:
                     asm.append('.section ' + sectype)
-                    asm.append('dlabel ' + temp_name + '_asm_end')
+                    asm.append('glabel ' + temp_name + '_asm_end')
     if any(late_rodata_asm):
         late_rodata_source_name_start = '_asmpp_late_rodata_start'
         late_rodata_source_name_end = '_asmpp_late_rodata_end'
@@ -1111,10 +1111,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Put some padding at the start to avoid conflating symbols with
         # references to the whole section.
         asm.append('.word 0, 0')
-        asm.append('dlabel {}'.format(late_rodata_source_name_start))
+        asm.append('glabel {}'.format(late_rodata_source_name_start))
         for conts in late_rodata_asm:
             asm.extend(conts)
-        asm.append('dlabel {}'.format(late_rodata_source_name_end))
+        asm.append('glabel {}'.format(late_rodata_source_name_end))
 
     o_file = tempfile.NamedTemporaryFile(prefix='asm-processor', suffix='.o', delete=False)
     o_name = o_file.name

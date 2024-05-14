@@ -4,8 +4,6 @@
 
 .macro glabel label
     .global \label
-    .ent \label
-    .type \label, @function
     \label:
 .endm
 
@@ -19,8 +17,6 @@
 .endm
 
 .macro endlabel label
-    .end \label
-    .size \label,.-\label
 .endm
 
 # Float register aliases (o32 ABI, odd ones are rarely used)
