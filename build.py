@@ -28,13 +28,13 @@ assembler_sh = " ".join(shlex.quote(x) for x in assembler_args)
 
 compile_args = all_args[sep2 + 1 :]
 
-in_file = Path(compile_args[-1])
-del compile_args[-1]
-
 out_ind = compile_args.index("-o")
 out_file = Path(compile_args[out_ind + 1])
 del compile_args[out_ind + 1]
 del compile_args[out_ind]
+
+in_file = Path(compile_args[-1])
+del compile_args[-1]
 
 
 in_dir = in_file.resolve().parent
