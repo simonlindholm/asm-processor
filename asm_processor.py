@@ -966,14 +966,24 @@ def parse_source(f, opts, out_dependencies, print_source=None):
         elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
                 and line.endswith('")')):
             fname = line[line.index('(') + 2 : -2]
-            out_dependencies.append(fname)
-            global_asm = GlobalAsmBlock(fname)
-            with open(fname, encoding=opts.input_enc) as f:
+            try:
+                f = open(fname, encoding=opts.input_enc)
+            except FileNotFoundError:
+                # The GLOBAL_ASM block might be surrounded by an ifdef, so it's
+                # not clear whether a missing file actually represents a compile
+                # error. Pass the responsibility for determining that on to the
+                # compiler by emitting a bad include directive. (IDO treats
+                # #error as a warning for some reason.)
+                output_lines[-1] = f"#include \"GLOBAL_ASM:{fname}\""
+                continue
+            with f:
+                global_asm = GlobalAsmBlock(fname)
                 for line2 in f:
                     global_asm.process_line(line2.rstrip(), output_enc)
             src, fn = global_asm.finish(state)
             output_lines[-1] = ''.join(src)
             asm_functions.append(fn)
+            out_dependencies.append(fname)
             global_asm = None
         elif line == '#pragma asmproc recurse':
             # C includes qualified as
