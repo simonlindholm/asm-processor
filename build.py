@@ -60,7 +60,9 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     preprocessed_path = tmpdir_path / preprocessed_filename
 
     with preprocessed_path.open("wb") as f:
-        functions, deps = asm_processor.run(asmproc_flags, outfile=f)
+        ret = asm_processor.run(asmproc_flags, outfile=f)
+        assert ret is not None
+        functions, deps = ret
 
     if keep_preprocessed_files:
         import shutil
