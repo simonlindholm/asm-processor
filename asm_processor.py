@@ -960,21 +960,47 @@ def parse_source(f, opts, out_dependencies, print_source=None):
                 global_asm = None
             else:
                 global_asm.process_line(raw_line, output_enc)
-        elif line in ['GLOBAL_ASM(', '#pragma GLOBAL_ASM(']:
+        elif line in ("GLOBAL_ASM(", "#pragma GLOBAL_ASM("):
             global_asm = GlobalAsmBlock("GLOBAL_ASM block at line " + str(line_no))
             start_index = len(output_lines)
-        elif ((line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
-                and line.endswith('")')):
-            fname = line[line.index('(') + 2 : -2]
-            out_dependencies.append(fname)
-            global_asm = GlobalAsmBlock(fname)
-            with open(fname, encoding=opts.input_enc) as f:
+        elif (
+            (line.startswith('GLOBAL_ASM("') or line.startswith('#pragma GLOBAL_ASM("'))
+            and line.endswith('")')
+        ) or (
+            (line.startswith('INCLUDE_ASM("') or line.startswith('INCLUDE_RODATA("'))
+            and '",' in line
+            and line.endswith(");")
+        ):
+            prologue = []
+            if line.startswith("INCLUDE_"):
+                # INCLUDE_ASM("path/to", functionname);
+                before, after = line.split('",', 1)
+                fname = before[before.index("(") + 2 :] + "/" + after.strip()[:-2] + ".s"
+                if line.startswith("INCLUDE_RODATA"):
+                    prologue = [".section .rodata"]
+            else:
+                # GLOBAL_ASM("path/to/file.s")
+                fname = line[line.index("(") + 2 : -2]
+            ext_global_asm = GlobalAsmBlock(fname)
+            for line2 in prologue:
+                ext_global_asm.process_line(line2, output_enc)
+            try:
+                f = open(fname, encoding=opts.input_enc)
+            except FileNotFoundError:
+                # The GLOBAL_ASM block might be surrounded by an ifdef, so it's
+                # not clear whether a missing file actually represents a compile
+                # error. Pass the responsibility for determining that on to the
+                # compiler by emitting a bad include directive. (IDO treats
+                # #error as a warning for some reason.)
+                output_lines[-1] = f"#include \"GLOBAL_ASM:{fname}\""
+                continue
+            with f:
                 for line2 in f:
-                    global_asm.process_line(line2.rstrip(), output_enc)
-            src, fn = global_asm.finish(state)
+                    ext_global_asm.process_line(line2.rstrip(), output_enc)
+            src, fn = ext_global_asm.finish(state)
             output_lines[-1] = ''.join(src)
             asm_functions.append(fn)
-            global_asm = None
+            out_dependencies.append(fname)
         elif line == '#pragma asmproc recurse':
             # C includes qualified as
             # #pragma asmproc recurse

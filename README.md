@@ -42,6 +42,8 @@ This functionality may be removed if not needed.
 
 Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")` or `#pragma GLOBAL_ASM("file.s")`.
 
+For compatibility with common GCC macros, `INCLUDE_ASM("folder", functionname);` and `INCLUDE_RODATA("folder", functionname);` are also allowed, and equivalent to `GLOBAL_ASM("folder/functionname.s")`.
+
 ### What is supported?
 
 `.text`, `.data`, `.bss` and `.rodata` sections, `.word`/`.incbin`, `.ascii`/`.asciz`, and `-g`, `-g3`, `-O1`, `-O2`, `-framepointer` and `-mips1`/`-mips2` flags to the IDO compiler.
