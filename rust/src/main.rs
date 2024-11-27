@@ -824,12 +824,10 @@ fn fixup_objfile(
     // strtab_adj = len(objfile.symtab.strtab.data)
     // objfile.symtab.strtab.data += asm_objfile.symtab.strtab.data
     // TODO fix
-    // let strtab = objfile
-    //     .sections
-    //     .get_mut(objfile.symtab().strtab.unwrap())
-    //     .unwrap();
-    // TODO eth this is wrong - we need something like the above but it breaks the borrow-checker
-    let mut strtab = objfile.sections[0].clone();
+    let strtab = objfile
+        .sections
+        .get_mut(objfile.symtab().strtab.unwrap())
+        .unwrap();
 
     let strtab_adj = strtab.data.len();
     strtab.data.extend(
@@ -1049,7 +1047,7 @@ fn fixup_objfile(
                         (binding << 4 | symtype as u32) as u8,
                         STV_DEFAULT,
                         section.unwrap().index as u16,
-                        &strtab, //objfile.symtab().strtab.unwrap(),
+                        &strtab,
                         symbol_name.as_str(),
                         endian,
                     )?;
