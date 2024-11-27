@@ -152,14 +152,19 @@ pub struct Symbol {
 }
 
 impl Symbol {
-    fn new(data: &[u8], strtab: &Section, name: Option<String>, endian: Endian) -> BinResult<Self> {
+    fn new(
+        data: &[u8],
+        strtab: Option<&Section>,
+        name: Option<String>,
+        endian: Endian,
+    ) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
         let data = SymbolData::read_options(&mut cursor, endian, ())?;
         assert_ne!(data.st_shndx, SHN_XINDEX);
         let bind = data.st_info >> 4;
         let typ = data.st_info & 0xf;
-        let name = name.unwrap_or_else(|| strtab.lookup_str(data.st_name as usize));
+        let name = name.unwrap_or_else(|| strtab.unwrap().lookup_str(data.st_name as usize));
         let visibility = data.st_other & 0x3;
 
         Ok(Self {
@@ -178,7 +183,6 @@ impl Symbol {
         st_info: u8,
         st_other: u8,
         st_shndx: u16,
-        strtab: &Section,
         name: &str,
         endian: Endian,
     ) -> BinResult<Self> {
@@ -194,7 +198,7 @@ impl Symbol {
         let mut cursor = Cursor::new(rv.as_mut_slice());
         header.write_options(&mut cursor, endian, ())?;
 
-        Symbol::new(&rv, strtab, Some(name.to_string()), endian)
+        Symbol::new(&rv, None, Some(name.to_string()), endian)
     }
 }
 

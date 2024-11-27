@@ -821,21 +821,22 @@ fn fixup_objfile(
     }
 
     // Merge strtab data.
-    // strtab_adj = len(objfile.symtab.strtab.data)
-    // objfile.symtab.strtab.data += asm_objfile.symtab.strtab.data
-    // TODO fix
-    let strtab = objfile
-        .sections
-        .get_mut(objfile.symtab().strtab.unwrap())
-        .unwrap();
+    let strtab_adj = {
+        let strtab = objfile
+            .sections
+            .get_mut(objfile.symtab().strtab.unwrap())
+            .unwrap();
 
-    let strtab_adj = strtab.data.len();
-    strtab.data.extend(
-        asm_objfile.sections[objfile.symtab().strtab.unwrap()]
-            .data
-            .iter()
-            .cloned(),
-    );
+        let strtab_adj = strtab.data.len();
+        strtab.data.extend(
+            asm_objfile.sections[asm_objfile.symtab().strtab.unwrap()]
+                .data
+                .iter()
+                .cloned(),
+        );
+
+        strtab_adj
+    };
 
     // Find relocated symbols
     let mut relocated_symbols = HashSet::new();
@@ -1047,7 +1048,6 @@ fn fixup_objfile(
                         (binding << 4 | symtype as u32) as u8,
                         STV_DEFAULT,
                         section.unwrap().index as u16,
-                        &strtab,
                         symbol_name.as_str(),
                         endian,
                     )?;
@@ -1073,7 +1073,16 @@ fn fixup_objfile(
             }
             assert_eq!(scope_level, 0);
         }
-        strtab.data.extend(new_strtab_data.join("").as_bytes());
+        // objfile.symtab.strtab.data += b''.join(new_strtab_data)
+        {
+            // TODO make method
+            let strtab = objfile
+                .sections
+                .get_mut(objfile.symtab().strtab.unwrap())
+                .unwrap();
+
+            strtab.data.extend(new_strtab_data.join("").as_bytes());
+        }
     }
 
     // Get rid of duplicate symbols, favoring ones that are not UNDEF.
