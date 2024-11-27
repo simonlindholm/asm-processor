@@ -822,10 +822,8 @@ fn fixup_objfile(
 
     // Merge strtab data.
     let strtab_adj = {
-        let strtab = objfile
-            .sections
-            .get_mut(objfile.symtab().strtab.unwrap())
-            .unwrap();
+        let idx = objfile.symtab().strtab.unwrap();
+        let strtab = objfile.sections.get_mut(idx).unwrap();
 
         let strtab_adj = strtab.data.len();
         strtab.data.extend(
@@ -1076,10 +1074,8 @@ fn fixup_objfile(
         // objfile.symtab.strtab.data += b''.join(new_strtab_data)
         {
             // TODO make method
-            let strtab = objfile
-                .sections
-                .get_mut(objfile.symtab().strtab.unwrap())
-                .unwrap();
+            let idx = objfile.symtab().strtab.unwrap();
+            let strtab = objfile.sections.get_mut(idx).unwrap();
 
             strtab.data.extend(new_strtab_data.join("").as_bytes());
         }
