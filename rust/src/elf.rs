@@ -447,7 +447,7 @@ impl Section {
 
         for i in 0..(self.data.len() / 16) {
             let symbol =
-                Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, None, endian).unwrap();
+                Symbol::new(&self.data[i * 16..(i + 1) * 16], Some(strtab), None, endian).unwrap();
             self.symbol_entries.push(symbol);
         }
     }
