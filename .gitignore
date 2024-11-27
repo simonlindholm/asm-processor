@@ -1,2 +1,3 @@
 *.o
 *.py[cod]
+rust/target/
