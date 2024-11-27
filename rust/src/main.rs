@@ -355,19 +355,57 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 &line_no.to_string()
             )));
             start_index = Some(output_lines.len());
-        } else if (line.starts_with("GLOBAL_ASM(\"") || line.starts_with("#pragma GLOBAL_ASM(\""))
-            && line.ends_with("\")")
+        } else if ((line.starts_with("GLOBAL_ASM(\"") || line.starts_with("#pragma GLOBAL_ASM(\""))
+            && line.ends_with("\")"))
+            || ((line.starts_with("INCLUDE_ASM(\"") || line.starts_with("INCLUDE_RODATA(\""))
+                && line.contains("\",")
+                && line.ends_with(");"))
         {
-            let fname = line[line.find("(").unwrap() + 2..line.len() - 2].to_string();
-            deps.push(fname.clone());
+            let (prologue, fname) = if line.starts_with("INCLUDE_") {
+                // INCLUDE_ASM("path/to", functionname);
+                let (before, after) = line.split_once("\",").unwrap();
+                let fname = format!(
+                    "{}/{}.s",
+                    before[before.find("(").unwrap() + 2..].to_owned(),
+                    after.trim()[..after.len() - 2].trim()
+                );
+
+                if line.starts_with("INCLUDE_RODATA") {
+                    (vec![".section .rodata".to_string()], fname)
+                } else {
+                    (vec![], fname)
+                }
+            } else {
+                // GLOBAL_ASM("path/to/file.s")
+                let fname = line[line.find("(").unwrap() + 2..line.len() - 2].to_string();
+                (vec![], fname)
+            };
+
             let mut gasm = GlobalAsmBlock::new(fname.clone());
-            for line2 in read_to_string(fname)?.lines() {
+            for line2 in prologue {
                 gasm.process_line(line2.trim_end(), &output_enc)?;
             }
+
+            if !Path::new(&fname).exists() {
+                // The GLOBAL_ASM block might be surrounded by an ifdef, so it's
+                // not clear whether a missing file actually represents a compile
+                // error. Pass the responsibility for determining that on to the
+                // compiler by emitting a bad include directive. (IDO treats
+                // #error as a warning for some reason.)
+                let output_lines_len = output_lines.len();
+                output_lines[output_lines_len - 1] = "#include \"GLOBAL_ASM:{fname}\"".to_owned();
+                continue;
+            }
+
+            for line2 in read_to_string(&fname)?.lines() {
+                gasm.process_line(&line2.trim_end(), &output_enc)?;
+            }
+
             let (src, fun) = gasm.finish(&mut state)?;
             let output_lines_len = output_lines.len();
             output_lines[output_lines_len - 1] = src.join("");
             asm_functions.push(fun);
+            deps.push(fname);
         } else if line == "#pragma asmproc recurse" {
             // C includes qualified as
             // #pragma asmproc recurse
@@ -624,7 +662,7 @@ fn fixup_objfile(
     // Remove clutter from objdump output for tests, and make the tests
     // portable by avoiding absolute paths. Outside of tests .mdebug is
     // useful for showing source together with asm, though.
-    let mdebug_section = objfile.find_section(".mdebug");
+    let mdebug_section = objfile.find_section(".mdebug").cloned();
     if drop_mdebug_gptab {
         objfile.drop_mdebug_gptab();
     }
@@ -913,19 +951,17 @@ fn fixup_objfile(
 
     // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
     if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
+        let mdebug_section = mdebug_section.unwrap();
         let mut static_name_count = HashMap::new();
         let mut strtab_index = objfile.sections[objfile.symtab().strtab.unwrap()]
             .data
             .len();
         let mut new_strtab_data = vec![];
 
-        let ifd_max = u32::from_be_bytes(mdebug_section.unwrap().data[18 * 4..19 * 4].try_into()?);
-        let cb_fd_offset =
-            u32::from_be_bytes(mdebug_section.unwrap().data[19 * 4..20 * 4].try_into()?);
-        let cb_sym_offset =
-            u32::from_be_bytes(mdebug_section.unwrap().data[9 * 4..10 * 4].try_into()?);
-        let cb_ss_offset =
-            u32::from_be_bytes(mdebug_section.unwrap().data[15 * 4..16 * 4].try_into()?);
+        let ifd_max = u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?);
+        let cb_fd_offset = u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?);
+        let cb_sym_offset = u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?);
+        let cb_ss_offset = u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?);
 
         for i in 0..ifd_max {
             let offset = cb_fd_offset + 18 * 4 * i;
