@@ -692,7 +692,7 @@ impl ElfFile {
         ]);
 
         let mut asm: Vec<String> = vec![];
-        let mut all_late_rodata_dummy_bytes: Vec<[u8; 4]> = vec![];
+        let mut all_late_rodata_dummy_bytes: Vec<Vec<[u8; 4]>> = vec![];
         let mut all_jtbl_rodata_size: Vec<usize> = vec![];
         let mut late_rodata_asm: Vec<String> = vec![];
         let mut late_rodata_source_name_start: Option<String> = None;
@@ -766,8 +766,7 @@ impl ElfFile {
 
             if !ifdefed {
                 all_text_glabels.extend(function.text_glabels.iter().cloned());
-                all_late_rodata_dummy_bytes
-                    .extend(function.late_rodata_dummy_bytes.iter().cloned());
+                all_late_rodata_dummy_bytes.push(function.late_rodata_dummy_bytes.clone());
                 all_jtbl_rodata_size.push(function.jtbl_rodata_size);
                 late_rodata_asm.extend(function.late_rodata_asm_conts.iter().cloned());
                 for (sectype, (temp_name, _)) in function.data.iter() {
@@ -953,28 +952,28 @@ impl ElfFile {
             let mut new_data = target.data.clone();
 
             for (dummy_bytes_list, jtbl_rodata_size) in all_late_rodata_dummy_bytes
-                .iter()
+                .iter_mut()
                 .zip(all_jtbl_rodata_size.iter())
             {
-                for (index, dummy_bytes) in dummy_bytes_list.iter().enumerate() {
+                let dummy_bytes_list_len = dummy_bytes_list.len();
+
+                for (index, dummy_bytes) in dummy_bytes_list.iter_mut().enumerate() {
                     let dummy_bytes = match endian {
                         Endian::Big => dummy_bytes,
                         Endian::Little => {
-                            let r = dummy_bytes.reverse_bits();
-                            &r.to_owned()
+                            dummy_bytes.reverse();
+                            dummy_bytes
                         }
                     };
-                    // TODO eth this is definitely broken
-                    let mut pos = *target
-                        .data
-                        .iter()
-                        .skip(last_rodata_pos)
-                        .find(|x| *x == dummy_bytes)
-                        .unwrap() as usize
+
+                    let mut pos = target.data[last_rodata_pos..]
+                        .windows(4)
+                        .position(|x| x == dummy_bytes)
+                        .unwrap()
                         + last_rodata_pos;
 
                     if index == 0
-                        && dummy_bytes_list.len() > 1
+                        && dummy_bytes_list_len > 1
                         && target.data[pos + 4..pos + 8] == *b"\0\0\0\0"
                     {
                         // Ugly hack to handle double alignment for non-matching builds.
