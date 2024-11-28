@@ -46,9 +46,9 @@ impl GlobalAsmBlock {
     fn re_comment_replacer(caps: &regex::Captures) -> String {
         let s = caps[0].to_string();
         if s.starts_with("/") || s.starts_with("#") {
-            return " ".to_owned();
+            " ".to_owned()
         } else {
-            return s;
+            s
         }
     }
 
@@ -138,10 +138,8 @@ impl GlobalAsmBlock {
     }
 
     fn add_sized(&mut self, size: isize, line: &str) -> Result<()> {
-        if self.cur_section == ".text" || self.cur_section == ".late_rodata" {
-            if size % 4 != 0 {
-                return Err(anyhow::anyhow!("size must be a multiple of 4 {}", line));
-            }
+        if (self.cur_section == ".text" || self.cur_section == ".late_rodata") && size % 4 != 0 {
+            return Err(anyhow::anyhow!("size must be a multiple of 4 {}", line));
         }
 
         if size < 0 {
@@ -170,8 +168,8 @@ impl GlobalAsmBlock {
 
     pub fn process_line(&mut self, line: &str, output_enc: &str) -> Result<()> {
         self.num_lines += 1;
-        if line.ends_with("\\") {
-            self.glued_line = format!("{}{}", self.glued_line, line[..line.len() - 1].to_string());
+        if let Some(stripped) = line.strip_suffix("\\") {
+            self.glued_line = format!("{}{}", self.glued_line, stripped);
             return Ok(());
         }
         let mut line = self.glued_line.clone() + line;
@@ -200,14 +198,14 @@ impl GlobalAsmBlock {
             || line.starts_with("dlabel ")
             || line.starts_with("jlabel ")
             || line.starts_with("endlabel ")
-            || (line.find(" ").is_none() && line.ends_with(":"))
+            || (!line.contains(" ") && line.ends_with(":"))
         {
             // label
         } else if line.starts_with(".section")
-            || match line.as_str() {
-                ".text" | ".data" | ".rdata" | ".rodata" | ".bss" | ".late_rodata" => true,
-                _ => false,
-            }
+            || matches!(
+                line.as_str(),
+                ".text" | ".data" | ".rdata" | ".rodata" | ".bss" | ".late_rodata"
+            )
         {
             // section change
             self.cur_section = if line == ".rdata" {
@@ -304,7 +302,7 @@ impl GlobalAsmBlock {
         } else if line.starts_with(".asci") {
             let z = line.starts_with(".asciz") || line.starts_with(".asciiz");
             self.add_sized(
-                Self::count_quoted_size(&line, z, &real_line, &output_enc)? as isize,
+                Self::count_quoted_size(&line, z, &real_line, output_enc)? as isize,
                 &real_line,
             )?;
         } else if line.starts_with(".byte") {
@@ -425,10 +423,10 @@ impl GlobalAsmBlock {
                 }
 
                 let dummy_bytes = state.next_late_rodata_hex();
-                late_rodata_dummy_bytes.push(dummy_bytes.clone());
+                late_rodata_dummy_bytes.push(dummy_bytes);
                 if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) && i + 1 < size {
                     let dummy_bytes2 = state.next_late_rodata_hex();
-                    late_rodata_dummy_bytes.push(dummy_bytes2.clone());
+                    late_rodata_dummy_bytes.push(dummy_bytes2);
                     let combined = [dummy_bytes, dummy_bytes2].concat().try_into().unwrap();
                     let fval = f64::from_be_bytes(combined);
                     let line = if state.pascal {
@@ -446,7 +444,7 @@ impl GlobalAsmBlock {
                     }
                     extra_mips1_nop = false;
                 } else {
-                    let fval = f32::from_be_bytes(dummy_bytes.try_into().unwrap());
+                    let fval = f32::from_be_bytes(dummy_bytes);
                     let line = if state.pascal {
                         state.pascal_assignment_float("f", fval)
                     } else {
@@ -593,8 +591,8 @@ impl GlobalAsmBlock {
         let ret_fn = Function {
             text_glabels: self.text_glabels.clone(),
             asm_conts: self.asm_conts.clone(),
-            late_rodata_dummy_bytes: late_rodata_dummy_bytes,
-            jtbl_rodata_size: jtbl_rodata_size,
+            late_rodata_dummy_bytes,
+            jtbl_rodata_size,
             late_rodata_asm_conts: self.late_rodata_asm_conts.clone(),
             fn_desc: self.fn_desc.clone(),
             data: HashMap::from([

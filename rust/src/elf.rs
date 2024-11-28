@@ -12,76 +12,34 @@ use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
 use encoding_rs::WINDOWS_1252;
 use temp_dir::TempDir;
 
-use crate::{Function, SymbolVisibility, ToCopyData};
+use crate::{Function, SymbolVisibility};
 
 const EI_NIDENT: usize = 16;
 const EI_CLASS: u32 = 4;
 const EI_DATA: u32 = 5;
-const EI_VERSION: u32 = 6;
-const EI_OSABI: u32 = 7;
-const EI_ABIVERSION: u32 = 8;
-const STN_UNDEF: u32 = 0;
 
 const SHN_UNDEF: u16 = 0;
 const SHN_ABS: u16 = 0xfff1;
-const SHN_COMMON: u16 = 0xfff2;
 const SHN_XINDEX: u16 = 0xffff;
-const SHN_LORESERVE: u16 = 0xff00;
 
-const STT_NOTYPE: u8 = 0;
 const STT_OBJECT: u8 = 1;
 const STT_FUNC: u8 = 2;
-const STT_SECTION: u8 = 3;
-const STT_FILE: u8 = 4;
-const STT_COMMON: u8 = 5;
-const STT_TLS: u8 = 6;
 
 const STB_LOCAL: u8 = 0;
 const STB_GLOBAL: u8 = 1;
-const STB_WEAK: u8 = 2;
 
 const STV_DEFAULT: u8 = 0;
-const STV_INTERNAL: u8 = 1;
-const STV_HIDDEN: u8 = 2;
-const STV_PROTECTED: u8 = 3;
 
 const SHT_NULL: u32 = 0;
-const SHT_PROGBITS: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const SHT_RELA: u32 = 4;
-const SHT_HASH: u32 = 5;
-const SHT_DYNAMIC: u32 = 6;
-const SHT_NOTE: u32 = 7;
 const SHT_NOBITS: u32 = 8;
 const SHT_REL: u32 = 9;
-const SHT_SHLIB: u32 = 10;
-const SHT_DYNSYM: u32 = 11;
-const SHT_INIT_ARRAY: u32 = 14;
-const SHT_FINI_ARRAY: u32 = 15;
-const SHT_PREINIT_ARRAY: u32 = 16;
-const SHT_GROUP: u32 = 17;
-const SHT_SYMTAB_SHNDX: u32 = 18;
 const SHT_MIPS_GPTAB: u32 = 0x70000003;
 const SHT_MIPS_DEBUG: u32 = 0x70000005;
-const SHT_MIPS_REGINFO: u32 = 0x70000006;
-const SHT_MIPS_OPTIONS: u32 = 0x7000000d;
 
-const SHF_WRITE: u32 = 0x1;
-const SHF_ALLOC: u32 = 0x2;
-const SHF_EXECINSTR: u32 = 0x4;
-const SHF_MERGE: u32 = 0x10;
-const SHF_STRINGS: u32 = 0x20;
-const SHF_INFO_LINK: u32 = 0x40;
 const SHF_LINK_ORDER: u32 = 0x80;
-const SHF_OS_NONCONFORMING: u32 = 0x100;
-const SHF_GROUP: u32 = 0x200;
-const SHF_TLS: u32 = 0x400;
-
-const R_MIPS_32: u32 = 2;
-const R_MIPS_26: u32 = 4;
-const R_MIPS_HI16: u32 = 5;
-const R_MIPS_LO16: u32 = 6;
 
 const MIPS_DEBUG_ST_STATIC: u32 = 2;
 const MIPS_DEBUG_ST_PROC: u32 = 6;
@@ -140,7 +98,7 @@ impl ElfHeader {
 
 #[binrw]
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct SymbolData {
+pub(crate) struct SymbolData {
     pub st_name: u32,
     pub st_value: u32,
     pub st_size: u32,
@@ -182,24 +140,7 @@ impl Symbol {
         })
     }
 
-    pub fn from_parts(
-        st_name: u32,
-        st_value: u32,
-        st_size: u32,
-        st_info: u8,
-        st_other: u8,
-        st_shndx: u16,
-        name: &str,
-        endian: Endian,
-    ) -> BinResult<Self> {
-        let header = SymbolData {
-            st_name,
-            st_value,
-            st_size,
-            st_info,
-            st_other,
-            st_shndx,
-        };
+    pub fn from_parts(header: SymbolData, name: &str, endian: Endian) -> BinResult<Self> {
         let mut rv = [0; 16];
         let mut cursor = Cursor::new(rv.as_mut_slice());
         header.write_options(&mut cursor, endian, ())?;
@@ -224,15 +165,14 @@ impl Symbol {
 
 #[binrw]
 #[derive(Clone)]
-struct RelocationData {
+pub(crate) struct RelocationData {
     pub r_offset: u32,
     r_info: u32,
     r_addend: Option<u32>,
 }
 
 #[derive(Clone)]
-struct Relocation {
-    sh_type: u32,
+pub(crate) struct Relocation {
     pub data: RelocationData,
 }
 
@@ -242,7 +182,13 @@ impl Relocation {
 
         let data = RelocationData::read_options(&mut cursor, endian, ())?;
 
-        Ok(Self { sh_type, data })
+        if sh_type == SHT_REL {
+            assert!(data.r_addend.is_none());
+        } else {
+            assert!(data.r_addend.is_some());
+        }
+
+        Ok(Self { data })
     }
 
     pub fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
@@ -260,14 +206,10 @@ impl Relocation {
     pub fn set_sym_index(&mut self, index: usize) {
         self.data.r_info = ((index as u32) << 8) | (self.data.r_info & 0xff);
     }
-
-    fn rel_type(&self) -> usize {
-        (self.data.r_info & 0xff) as usize
-    }
 }
 
 #[binrw]
-struct HDRR {
+struct Hdrr {
     magic: u16,
     vstamp: u16,
     iline_max: u32,
@@ -295,13 +237,13 @@ struct HDRR {
     cb_ext_offset: u32,
 }
 
-impl HDRR {
+impl Hdrr {
     const SIZE: usize = 96;
 }
 
 #[binrw]
 #[derive(Clone)]
-struct SectionHeader {
+pub(crate) struct SectionHeader {
     sh_name: u32,
     pub sh_type: u32,
     sh_flags: u32,
@@ -319,7 +261,7 @@ impl SectionHeader {
 }
 
 #[derive(Clone)]
-struct Section {
+pub(crate) struct Section {
     pub header: SectionHeader,
     pub data: Vec<u8>,
     pub index: usize,
@@ -336,7 +278,7 @@ impl Section {
         let mut cursor = Cursor::new(data);
 
         let header = SectionHeader::read_options(&mut cursor, endian, ())?;
-        assert!(!(header.sh_flags & SHF_LINK_ORDER != 0));
+        assert!(header.sh_flags & SHF_LINK_ORDER == 0);
         if header.sh_entsize != 0 {
             assert_eq!(header.sh_size % header.sh_entsize, 0);
         }
@@ -397,8 +339,7 @@ impl Section {
         assert_eq!(self.header.sh_type, SHT_STRTAB);
         let to = self.data.iter().skip(index).position(|&x| x == 0).unwrap() + index;
         let line = WINDOWS_1252.decode_without_bom_handling(&self.data[index..to]);
-        let line = line.0.into_owned();
-        line
+        line.0.into_owned()
     }
 
     fn add_str(&mut self, string: &str) -> u32 {
@@ -487,21 +428,11 @@ impl Section {
         self.relocations = entries;
     }
 
-    fn local_symbols(&self) -> &[Symbol] {
-        assert_eq!(self.header.sh_type, SHT_SYMTAB);
-        &self.symbol_entries[..self.header.sh_info as usize]
-    }
-
-    fn global_symbols(&self) -> &[Symbol] {
-        assert_eq!(self.header.sh_type, SHT_SYMTAB);
-        &self.symbol_entries[self.header.sh_info as usize..]
-    }
-
-    fn relocate_mdebug(&mut self, original_offset: usize, endian: Endian) {
+    fn relocate_mdebug(&mut self, original_offset: usize, endian: Endian) -> BinResult<()> {
         assert_eq!(self.header.sh_type, SHT_MIPS_DEBUG);
         let shift_by = self.header.sh_offset as usize - original_offset;
 
-        let mut hdrr = HDRR::read_options(&mut Cursor::new(&self.data), endian, ()).unwrap();
+        let mut hdrr = Hdrr::read_options(&mut Cursor::new(&self.data), endian, ()).unwrap();
 
         assert_eq!(hdrr.magic, 0x7009);
 
@@ -539,11 +470,12 @@ impl Section {
             hdrr.cb_ext_offset += shift_by as u32;
         }
 
-        let mut new_data = [0; HDRR::SIZE];
+        let mut new_data = [0; Hdrr::SIZE];
         let mut cursor = Cursor::new(new_data.as_mut_slice());
-        hdrr.write_options(&mut cursor, endian, ());
+        hdrr.write_options(&mut cursor, endian, ())?;
 
         self.data = new_data.to_vec();
+        Ok(())
     }
 }
 
@@ -555,12 +487,19 @@ pub struct ElfFile {
     symtab: Option<usize>,
 }
 
+struct ToCopyData {
+    loc: u32,
+    size: usize,
+    temp_name: String,
+    fn_desc: String,
+}
+
 impl ElfFile {
     pub fn new(data: &[u8]) -> BinResult<Self> {
         let data = data.to_vec();
         assert_eq!(data[..4], [0x7f, b'E', b'L', b'F']);
 
-        let endian: Endian = if data[5] == 1 {
+        let endian: Endian = if data[EI_DATA as usize] == 1 {
             Endian::Little
         } else if data[5] == 2 {
             Endian::Big
@@ -598,7 +537,7 @@ impl ElfFile {
         let shstr = sections.get(header.e_shstrndx as usize).unwrap().clone();
         for s in sections.iter_mut() {
             s.name = Some(shstr.lookup_str(s.header.sh_name as usize));
-            s.late_init(&mut sections, endian);
+            // s.late_init(&mut sections, endian); TODO BLAH
         }
 
         Ok(ElfFile {
@@ -664,7 +603,7 @@ impl ElfFile {
         s.late_init(&mut self.sections, endian);
         self.sections.push(s);
 
-        &self.sections.last().unwrap()
+        self.sections.last().unwrap()
     }
 
     pub fn drop_mdebug_gptab(&mut self) {
@@ -683,18 +622,18 @@ impl ElfFile {
         if align > 0 && pos % align != 0 {
             let pad = align - (pos % align);
             for _ in 0..pad {
-                writer.write(&[0]).unwrap();
+                writer.write_all(&[0]).unwrap();
             }
         }
     }
 
-    pub fn write(&mut self, filename: PathBuf) {
+    pub fn write(&mut self, filename: PathBuf) -> BinResult<()> {
         let mut file = std::fs::File::create(filename).unwrap();
         let mut writer = BufWriter::new(&mut file);
 
         self.header.e_shnum = self.sections.len() as u16;
         writer
-            .write(&self.header.to_bin(self.endian).unwrap())
+            .write_all(&self.header.to_bin(self.endian).unwrap())
             .unwrap();
 
         for s in &mut self.sections {
@@ -704,9 +643,9 @@ impl ElfFile {
                 s.header.sh_offset = writer.stream_position().unwrap() as u32;
                 if s.header.sh_type == SHT_MIPS_DEBUG && s.header.sh_offset != old_offset {
                     // The .mdebug section has moved, relocate offsets
-                    s.relocate_mdebug(old_offset as usize, self.endian);
+                    s.relocate_mdebug(old_offset as usize, self.endian)?;
                 }
-                writer.write(&s.data).unwrap();
+                writer.write_all(&s.data).unwrap();
             }
         }
 
@@ -715,15 +654,16 @@ impl ElfFile {
 
         for s in &mut self.sections {
             writer
-                .write(&s.header_to_bin(self.endian).unwrap())
+                .write_all(&s.header_to_bin(self.endian).unwrap())
                 .unwrap();
         }
 
         writer.seek(SeekFrom::Start(0)).unwrap();
         writer
-            .write(&self.header.to_bin(self.endian).unwrap())
+            .write_all(&self.header.to_bin(self.endian).unwrap())
             .unwrap();
         writer.flush().unwrap();
+        Ok(())
     }
 
     pub fn fixup_objfile(
@@ -810,11 +750,14 @@ impl ElfFile {
                     fn_desc: function.fn_desc.clone(),
                 });
                 if !function.text_glabels.is_empty() && sectype == ".text" {
-                    func_sizes
-                        .get_mut(function.text_glabels.first().unwrap())
-                        .map(|s| {
-                            *s = *size;
-                        });
+                    if let Some(s) = func_sizes.get_mut(function.text_glabels.first().unwrap()) {
+                        *s = *size;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Function {} has no size",
+                            function.text_glabels.first().unwrap()
+                        ));
+                    }
                 }
                 prev_locs
                     .get_mut(sectype.as_str())
@@ -953,8 +896,8 @@ impl ElfFile {
                 if loc2 - loc1 != to_copy_data.size as u32 {
                     return Err(anyhow::anyhow!(
                     "incorrectly computed size for section {}, {}. If using .double, make sure to provide explicit alignment padding.",
-                    to_copy_data.temp_name,
-                    loc2 - loc1
+                    sectype,
+                    to_copy_data.fn_desc
                 ));
                 }
             }
@@ -968,7 +911,7 @@ impl ElfFile {
             let mut data = target.as_ref().unwrap().data.clone();
             for a in to_copy.get(sectype).unwrap().iter() {
                 let pos = a.loc as usize;
-                let count = a.size as usize;
+                let count = a.size;
 
                 data[pos..pos + count].copy_from_slice(&source.data[pos..pos + count]);
 
@@ -1017,9 +960,8 @@ impl ElfFile {
                     let dummy_bytes = match endian {
                         Endian::Big => dummy_bytes,
                         Endian::Little => {
-                            let dummy_bytes = dummy_bytes.clone();
-                            dummy_bytes.reverse_bits();
-                            &dummy_bytes.to_owned()
+                            let r = dummy_bytes.reverse_bits();
+                            &r.to_owned()
                         }
                     };
                     // TODO eth this is definitely broken
@@ -1090,7 +1032,7 @@ impl ElfFile {
         let mut relocated_symbols = HashSet::new();
         for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
             // objfile
-            if let Some(sec) = objfile.find_section(&sectype) {
+            if let Some(sec) = objfile.find_section(sectype) {
                 for reltab_idx in &sec.relocated_by {
                     let reltab = &objfile.sections[*reltab_idx];
                     for rel in &reltab.relocations {
@@ -1106,7 +1048,7 @@ impl ElfFile {
             }
 
             // asm_objfile
-            if let Some(sec) = asm_objfile.find_section(&sectype) {
+            if let Some(sec) = asm_objfile.find_section(sectype) {
                 for reltab_idx in &sec.relocated_by {
                     let reltab = &asm_objfile.sections[*reltab_idx];
                     for rel in &reltab.relocations {
@@ -1132,7 +1074,7 @@ impl ElfFile {
             .iter()
             .skip(1)
             .filter(|x| !x.name.starts_with("_asmpp_"))
-            .map(|x| x.clone()) // TODO cloned symbol
+            .cloned() // TODO cloned symbols
             .collect();
 
         for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
@@ -1145,7 +1087,7 @@ impl ElfFile {
                 assert!(!relocated_symbols.contains(&s));
                 continue;
             }
-            if s.data.st_shndx != SHN_UNDEF && s.data.st_shndx != SHN_UNDEF {
+            if s.data.st_shndx != SHN_UNDEF && s.data.st_shndx != SHN_ABS {
                 let section_name = asm_objfile.sections[s.data.st_shndx as usize]
                     .name
                     .clone()
@@ -1255,11 +1197,8 @@ impl ElfFile {
                         if scope_level > 1 {
                             // For in-function statics, append an increasing counter to
                             // the name, to avoid duplicate conflicting symbols.
-                            let count = static_name_count
-                                .get(symbol_name.as_str())
-                                .or(Some(&0))
-                                .unwrap()
-                                + 1;
+                            let count =
+                                static_name_count.get(symbol_name.as_str()).unwrap_or(&0) + 1;
                             static_name_count.insert(symbol_name.clone(), count);
                             symbol_name = format!("{}_{}", symbol_name, count);
                         }
@@ -1288,7 +1227,7 @@ impl ElfFile {
                                 ));
                             }
                         };
-                        let section = objfile.find_section(&section_name);
+                        let section = objfile.find_section(section_name);
                         let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
                         let binding = if make_statics_global {
                             STB_GLOBAL
@@ -1296,12 +1235,14 @@ impl ElfFile {
                             STB_LOCAL
                         };
                         let sym = Symbol::from_parts(
-                            strtab_index as u32,
-                            value,
-                            0,
-                            ((binding as u32) << 4 | symtype as u32) as u8,
-                            STV_DEFAULT,
-                            section.unwrap().index as u16,
+                            SymbolData {
+                                st_name: strtab_index as u32,
+                                st_value: value,
+                                st_size: 0,
+                                st_info: ((binding as u32) << 4 | symtype as u32) as u8,
+                                st_other: STV_DEFAULT,
+                                st_shndx: section.unwrap().index as u16,
+                            },
                             symbol_name.as_str(),
                             endian,
                         )?;
@@ -1368,7 +1309,9 @@ impl ElfFile {
                     newer_syms.push(s.clone()); // TODO cloned symbol
                 } else {
                     let existing = existing.unwrap();
-                    if s.data.st_shndx != SHN_UNDEF && !(existing.data.st_value == s.data.st_value)
+                    if s.data.st_shndx != SHN_UNDEF
+                        && !(existing.data.st_shndx == s.data.st_shndx
+                            && existing.data.st_value == s.data.st_value)
                     {
                         return Err(anyhow::anyhow!("symbol \"{}\" defined twice", s.name));
                     } else {
@@ -1401,7 +1344,7 @@ impl ElfFile {
         for s in old_syms.iter_mut() {
             s.new_index = replace_by.get(s).unwrap().new_index;
         }
-        let new_sym_data: Vec<u8> = new_syms.iter().map(|s| s.to_bin()).flatten().collect();
+        let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.to_bin()).collect();
 
         objfile.symtab_mut().data = new_sym_data;
         objfile.symtab_mut().header.sh_info = num_local_syms as u32;
@@ -1432,8 +1375,7 @@ impl ElfFile {
                     }
                     reltab.data = nrels
                         .iter()
-                        .map(|x| x.to_bin(endian).unwrap())
-                        .flatten()
+                        .flat_map(|x| x.to_bin(endian).unwrap())
                         .collect();
                     reltab.relocations = nrels;
                 }
@@ -1442,7 +1384,7 @@ impl ElfFile {
 
         // Move over relocations
         for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
-            if let Some(source) = asm_objfile.find_section(&sectype) {
+            if let Some(source) = asm_objfile.find_section(sectype) {
                 if source.data.is_empty() {
                     continue;
                 }
@@ -1452,11 +1394,7 @@ impl ElfFile {
                 } else {
                     sectype
                 };
-                let target_index = objfile.find_section(&target_sectype).unwrap().index as u32;
-                let mut target_reltab =
-                    objfile.find_section(format!(".rel{}", target_sectype).as_str());
-                let mut target_reltaba =
-                    objfile.find_section(format!(".rela{}", target_sectype).as_str());
+                let target_index = objfile.find_section(target_sectype).unwrap().index as u32;
                 for reltab in &source.relocated_by {
                     let reltab = &mut asm_objfile.sections[*reltab].clone();
                     for rel in &mut reltab.relocations {
@@ -1472,12 +1410,33 @@ impl ElfFile {
                     let new_data: Vec<u8> = reltab
                         .relocations
                         .iter()
-                        .map(|x| x.to_bin(endian).unwrap())
-                        .flatten()
+                        .flat_map(|x| x.to_bin(endian).unwrap())
                         .collect();
 
                     if reltab.header.sh_type == SHT_REL {
-                        let mut target_reltab = target_reltab.unwrap_or(objfile.add_section(
+                        if let Some(target_reltab) =
+                            objfile.find_section_mut(format!(".rel{}", target_sectype).as_str())
+                        {
+                            target_reltab.data.extend(new_data);
+                        } else {
+                            objfile.add_section(
+                                format!("rel{}", target_sectype).as_str(),
+                                SHT_REL,
+                                0,
+                                objfile.symtab().index as u32,
+                                target_index,
+                                4,
+                                8,
+                                &new_data,
+                                endian,
+                            );
+                        }
+                    } else if let Some(target_reltaba) =
+                        objfile.find_section_mut(format!(".rela{}", target_sectype).as_str())
+                    {
+                        target_reltaba.data.extend(new_data);
+                    } else {
+                        objfile.add_section(
                             format!("rel{}", target_sectype).as_str(),
                             SHT_REL,
                             0,
@@ -1485,28 +1444,14 @@ impl ElfFile {
                             target_index,
                             4,
                             8,
-                            &[],
+                            &new_data,
                             endian,
-                        ));
-                        target_reltab.data.extend(new_data);
-                    } else {
-                        let mut target_reltaba = target_reltaba.unwrap_or(objfile.add_section(
-                            format!("rela{}", target_sectype).as_str(),
-                            SHT_RELA,
-                            0,
-                            objfile.symtab().index as u32,
-                            target_index,
-                            4,
-                            12,
-                            &[],
-                            endian,
-                        ));
-                        target_reltaba.data.extend(new_data);
+                        );
                     }
                 }
             }
         }
-        objfile.write(objfile_path.to_path_buf());
+        objfile.write(objfile_path.to_path_buf())?;
 
         // TODO keeping these around for debugging for now
         // fs::remove_file(s_file_path);

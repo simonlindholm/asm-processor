@@ -46,12 +46,12 @@ impl GlobalState {
             late_rodata_hex: 0xE0123456,
             valuectr: 0,
             namectr: 0,
-            min_instr_count: min_instr_count,
-            skip_instr_count: skip_instr_count,
-            use_jtbl_for_rodata: use_jtbl_for_rodata,
-            prelude_if_late_rodata: prelude_if_late_rodata,
-            mips1: mips1,
-            pascal: pascal,
+            min_instr_count,
+            skip_instr_count,
+            use_jtbl_for_rodata,
+            prelude_if_late_rodata,
+            mips1,
+            pascal,
         }
     }
 
@@ -290,7 +290,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     let mut is_early_include = false;
     let mut start_index: Option<usize> = None;
 
-    let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = {")?;
+    let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
 
     for (line_no, line) in read_to_string(infile_path)?.lines().enumerate() {
         let mut raw_line = line.trim().to_owned();
@@ -361,7 +361,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
             }
 
             for line2 in read_to_string(&fname)?.lines() {
-                gasm.process_line(&line2.trim_end(), &output_enc)?;
+                gasm.process_line(line2.trim_end(), &output_enc)?;
             }
 
             let (src, fun) = gasm.finish(&mut state)?;
@@ -448,13 +448,6 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     })
 }
 
-pub struct ToCopyData {
-    loc: u32,
-    size: usize,
-    temp_name: String,
-    fn_desc: String,
-}
-
 #[derive(Default)]
 struct RunResult {
     functions: Vec<Function>,
@@ -468,8 +461,8 @@ fn run(
     in_functions: Option<&[Function]>,
 ) -> Result<RunResult> {
     if args.post_process.is_none() {
-        let res = parse_source(&args.filename, &args, false)?;
-        outfile.write(res.output.as_bytes())?;
+        let res = parse_source(&args.filename, args, false)?;
+        outfile.write_all(res.output.as_bytes())?;
         return Ok(res);
     } else {
         let objfile = args.post_process.clone().unwrap();
@@ -482,7 +475,7 @@ fn run(
         let functions = match in_functions {
             Some(funcs) => funcs.to_vec(),
             None => {
-                let res = parse_source(&args.filename, &args, false)?;
+                let res = parse_source(&args.filename, args, false)?;
                 res.functions
             }
         };
@@ -635,7 +628,7 @@ fn main() -> Result<()> {
     let temp_dir = TempDir::with_prefix("asm_processor")?;
     let preprocessed_filename = format!(
         "preprocessed_{}.{}",
-        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4(),
         in_file
             .extension()
             .ok_or_else(|| anyhow::anyhow!("No file extension"))?
@@ -665,17 +658,19 @@ fn main() -> Result<()> {
     compile_command
         .args(&compile_args)
         .arg("-I")
-        .arg(&in_dir)
+        .arg(in_dir)
         .arg("-o")
-        .arg(&out_file)
+        .arg(out_file)
         .arg(&preprocessed_path);
 
-    let status = compile_command.status().expect(&format!(
-        "Failed to compile file {}. Command line: {} {:?}",
-        in_file.display(),
-        compiler[0].clone(),
-        compile_command
-    ));
+    let status = compile_command.status().unwrap_or_else(|_| {
+        panic!(
+            "Failed to compile file {}. Command line: {} {:?}",
+            in_file.display(),
+            compiler[0].clone(),
+            compile_command
+        )
+    });
 
     if !status.success() {
         return Err(anyhow::anyhow!(
