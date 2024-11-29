@@ -165,9 +165,15 @@ impl Symbol {
 
 #[binrw]
 #[derive(Clone)]
-pub(crate) struct RelocationData {
+pub(crate) struct RelocationDataInner {
     pub r_offset: u32,
     r_info: u32,
+}
+
+#[binrw]
+#[derive(Clone)]
+pub(crate) struct RelocationData {
+    inner: RelocationDataInner,
     r_addend: Option<u32>,
 }
 
@@ -180,7 +186,15 @@ impl Relocation {
     fn new(data: &[u8], sh_type: u32, endian: Endian) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
-        let data = RelocationData::read_options(&mut cursor, endian, ())?;
+        let data = if data.len() < size_of::<RelocationData>() {
+            let inner = RelocationDataInner::read_options(&mut cursor, endian, ())?;
+            RelocationData {
+                inner,
+                r_addend: None,
+            }
+        } else {
+            RelocationData::read_options(&mut cursor, endian, ())?
+        };
 
         if sh_type == SHT_REL {
             assert!(data.r_addend.is_none());
@@ -200,11 +214,11 @@ impl Relocation {
     }
 
     pub fn sym_index(&self) -> usize {
-        (self.data.r_info >> 8) as usize
+        (self.data.inner.r_info >> 8) as usize
     }
 
     pub fn set_sym_index(&mut self, index: usize) {
-        self.data.r_info = ((index as u32) << 8) | (self.data.r_info & 0xff);
+        self.data.inner.r_info = ((index as u32) << 8) | (self.data.inner.r_info & 0xff);
     }
 }
 
@@ -535,9 +549,27 @@ impl ElfFile {
         assert!(symtab.is_some());
 
         let shstr = sections.get(header.e_shstrndx as usize).unwrap().clone();
+        let mut relocated_bys = vec![];
+
+        let sections_before = sections.clone();
+
         for s in sections.iter_mut() {
             s.name = Some(shstr.lookup_str(s.header.sh_name as usize));
             // s.late_init(&mut sections, endian); TODO BLAH
+
+            if s.header.sh_type == SHT_SYMTAB {
+                s.init_symbols(&sections_before, endian);
+            } else if s.is_rel() {
+                relocated_bys.push((s.header.sh_info, s.index));
+
+                s.rel_target = Some(sections_before[s.header.sh_info as usize].index);
+                s.init_relocs(endian);
+            }
+        }
+
+        for (target, reloc) in relocated_bys {
+            let s = sections.get_mut(target as usize).unwrap();
+            s.relocated_by.push(reloc);
         }
 
         Ok(ElfFile {
@@ -750,14 +782,7 @@ impl ElfFile {
                     fn_desc: function.fn_desc.clone(),
                 });
                 if !function.text_glabels.is_empty() && sectype == ".text" {
-                    if let Some(s) = func_sizes.get_mut(function.text_glabels.first().unwrap()) {
-                        *s = *size;
-                    } else {
-                        return Err(anyhow::anyhow!(
-                            "Function {} has no size",
-                            function.text_glabels.first().unwrap()
-                        ));
-                    }
+                    func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
                 }
                 prev_locs
                     .get_mut(sectype.as_str())
@@ -862,9 +887,7 @@ impl ElfFile {
             let source_reginfo_data = asm_objfile.find_section(".reginfo").unwrap().data.clone();
             let mut data = target_reginfo.as_ref().unwrap().data.clone();
             for i in 0..20 {
-                if data[i] == 0 {
-                    data[i] |= source_reginfo_data[i];
-                }
+                data[i] |= source_reginfo_data[i];
             }
             target_reginfo.as_mut().unwrap().data = data;
         }
@@ -931,7 +954,10 @@ impl ElfFile {
         // Move over late rodata. This is heuristic, sadly, since I can't think
         // of another way of doing it.
         let mut moved_late_rodata: HashMap<u32, u32> = HashMap::new();
-        if !all_late_rodata_dummy_bytes.is_empty() || !all_jtbl_rodata_size.is_empty() {
+        if (!all_late_rodata_dummy_bytes.is_empty()
+            && all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty()))
+            || (!all_jtbl_rodata_size.is_empty() && all_jtbl_rodata_size.iter().any(|&s| s > 0))
+        {
             let source = asm_objfile.find_section(".late_rodata").unwrap();
             let target = objfile.find_section_mut(".rodata").unwrap();
             let mut source_pos = asm_objfile
@@ -1029,21 +1055,19 @@ impl ElfFile {
         };
 
         // Find relocated symbols
-        let mut relocated_symbols = HashSet::new();
+        let mut relocated_symbols = vec![];
         for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
             // objfile
             if let Some(sec) = objfile.find_section(sectype) {
                 for reltab_idx in &sec.relocated_by {
                     let reltab = &objfile.sections[*reltab_idx];
                     for rel in &reltab.relocations {
-                        relocated_symbols.insert(
+                        relocated_symbols.push(
                             objfile
                                 .symtab()
                                 .symbol_entries
                                 .get(rel.sym_index())
                                 .unwrap()
-                                .borrow()
-                                .name
                                 .clone(),
                         );
                     }
@@ -1055,14 +1079,12 @@ impl ElfFile {
                 for reltab_idx in &sec.relocated_by {
                     let reltab = &asm_objfile.sections[*reltab_idx];
                     for rel in &reltab.relocations {
-                        relocated_symbols.insert(
+                        relocated_symbols.push(
                             asm_objfile
                                 .symtab()
                                 .symbol_entries
                                 .get(rel.sym_index())
                                 .unwrap()
-                                .borrow()
-                                .name
                                 .clone(),
                         );
                     }
@@ -1085,11 +1107,11 @@ impl ElfFile {
 
         for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
             let is_local = i < asm_objfile.symtab().header.sh_info as usize;
-            if is_local && !relocated_symbols.contains(&s.borrow().name) {
+            if is_local && !relocated_symbols.contains(s) {
                 continue;
             }
             if s.borrow().name.starts_with("_asmpp_") {
-                assert!(!relocated_symbols.contains(&s.borrow().name));
+                assert!(!relocated_symbols.contains(s));
                 continue;
             }
             if s.borrow().data.st_shndx != SHN_UNDEF && s.borrow().data.st_shndx != SHN_ABS {
@@ -1115,7 +1137,8 @@ impl ElfFile {
                 if all_text_glabels.contains(s.borrow().name.as_str()) {
                     s.borrow_mut().set_type(STT_FUNC);
                     if func_sizes.contains_key(s.borrow().name.as_str()) {
-                        s.borrow_mut().data.st_size = func_sizes[s.borrow().name.as_str()] as u32;
+                        let siz: u32 = func_sizes[s.borrow().name.as_str()] as u32;
+                        s.borrow_mut().data.st_size = siz;
                     }
                 }
                 if section_name == ".late_rodata" {
@@ -1129,7 +1152,8 @@ impl ElfFile {
                             "local symbols in .late_rodata are not allowed"
                         ));
                     }
-                    s.borrow_mut().data.st_value = moved_late_rodata[&(s.borrow().data.st_value)];
+                    let st_val = s.borrow().data.st_value;
+                    s.borrow_mut().data.st_value = moved_late_rodata[&st_val];
                 }
             }
             s.borrow_mut().data.st_name += strtab_adj as u32;
@@ -1205,18 +1229,14 @@ impl ElfFile {
                             let count =
                                 static_name_count.get(symbol_name.as_str()).unwrap_or(&0) + 1;
                             static_name_count.insert(symbol_name.clone(), count);
-                            symbol_name = format!("{}_{}", symbol_name, count);
+                            symbol_name = format!("{}:{}", symbol_name, count);
                         }
                         let emitted_symbol_name =
                             if convert_statics == SymbolVisibility::GlobalWithFilename {
                                 // Change the emitted symbol name to include the filename,
                                 // but don't let that affect deduplication logic (we still
                                 // want to be able to reference statics from GLOBAL_ASM).
-                                format!(
-                                    "{}_{}",
-                                    objfile_path.file_stem().unwrap().to_str().unwrap(),
-                                    symbol_name
-                                )
+                                format!("{}:{}", objfile_path.to_string_lossy(), symbol_name)
                             } else {
                                 symbol_name.clone()
                             };
@@ -1335,15 +1355,8 @@ impl ElfFile {
         // Put local symbols in front, with the initial dummy entry first, and
         // _gp_disp at the end if it exists.
         new_syms.insert(0, empty_symbol.clone());
-        new_syms.sort_by(|a, b| {
-            if a.borrow().bind != STB_LOCAL && b.borrow().bind == STB_LOCAL {
-                Ordering::Less
-            } else if a.borrow().name == "_gp_disp" && b.borrow().name != "_gp_disp" {
-                Ordering::Greater
-            } else {
-                Ordering::Equal
-            }
-        });
+        new_syms.sort_by_key(|a| (a.borrow().bind != STB_LOCAL, a.borrow().name == "_gp_disp"));
+
         let num_local_syms = new_syms
             .iter()
             .filter(|x| x.borrow().bind == STB_LOCAL)
@@ -1378,9 +1391,10 @@ impl ElfFile {
                     for rel in reltab.relocations.iter() {
                         let mut rel = rel.clone();
                         if sectype == ".text"
-                            && modified_text_positions.contains(&(rel.data.r_offset as usize))
+                            && modified_text_positions.contains(&(rel.data.inner.r_offset as usize))
                             || sectype == ".rodata"
-                                && jtbl_rodata_positions.contains(&(rel.data.r_offset as usize))
+                                && jtbl_rodata_positions
+                                    .contains(&(rel.data.inner.r_offset as usize))
                         {
                             // don't include relocations for late_rodata dummy code
                             continue;
@@ -1421,7 +1435,7 @@ impl ElfFile {
                                 .name],
                         );
                         if *sectype == ".late_rodata" {
-                            rel.data.r_offset = moved_late_rodata[&(rel.data.r_offset)];
+                            rel.data.inner.r_offset = moved_late_rodata[&(rel.data.inner.r_offset)];
                         }
                     }
                     let new_data: Vec<u8> = reltab

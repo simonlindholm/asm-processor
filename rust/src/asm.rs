@@ -211,7 +211,14 @@ impl GlobalAsmBlock {
             self.cur_section = if line == ".rdata" {
                 ".rodata".to_string()
             } else {
-                line.split(",").last().unwrap().to_string()
+                line.split(",")
+                    .next()
+                    .unwrap()
+                    .to_string()
+                    .split_whitespace()
+                    .last()
+                    .unwrap()
+                    .to_string()
             };
 
             match self.cur_section.as_str() {
@@ -220,7 +227,7 @@ impl GlobalAsmBlock {
             }
 
             changed_section = true;
-        } else if line.starts_with(".date_rodata_alignment") {
+        } else if line.starts_with(".late_rodata_alignment") {
             if self.cur_section != ".late_rodata" {
                 return Err(anyhow::anyhow!(format!(
                     ".late_rodata_alignment must occur within .late_rodata section\n{}",

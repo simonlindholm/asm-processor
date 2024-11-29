@@ -104,13 +104,13 @@ impl GlobalState {
     fn pascal_assignment_float(&mut self, tp: &str, val: f32) -> String {
         self.valuectr += 1;
         let address = (8 * self.valuectr) & 0x7FFF;
-        format!("v{} := p{}({}); v{}^ := {};", tp, tp, address, tp, val)
+        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
     }
 
     fn pascal_assignment_double(&mut self, tp: &str, val: f64) -> String {
         self.valuectr += 1;
         let address = (8 * self.valuectr) & 0x7FFF;
-        format!("v{} := p{}({}); v{}^ := {};", tp, tp, address, tp, val)
+        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
     }
 
     fn pascal_assignment_int(&mut self, tp: &str, val: i32) -> String {
@@ -131,16 +131,16 @@ enum SymbolVisibility {
 #[derive(Args, Debug)]
 #[group(required = false, multiple = false)]
 struct OptFlag {
-    #[clap(long = "O0", action)]
+    #[clap(long = "O0")]
     o0: bool,
 
-    #[clap(long = "O1", action)]
+    #[clap(long = "O1")]
     o1: bool,
 
-    #[clap(long = "O2", action)]
+    #[clap(long = "O2")]
     o2: bool,
 
-    #[clap(long = "O3", action)]
+    #[clap(long = "O3")]
     g: bool,
 }
 
@@ -178,7 +178,7 @@ struct AsmProcArgs {
     output_enc: String,
 
     /// drop mdebug and gptab sections
-    #[clap(long, action)]
+    #[clap(long)]
     drop_mdebug_gptab: bool,
 
     /// change static symbol visibility
@@ -186,23 +186,23 @@ struct AsmProcArgs {
     convert_statics: Option<SymbolVisibility>,
 
     /// force processing of files without GLOBAL_ASM blocks
-    #[clap(long, action)]
+    #[clap(long)]
     force: bool,
 
     /// Replace floats with their encoded hexadecimal representation in CutsceneData data
-    #[clap(long, action)]
-    enable_cutscene_data_float_encoding: bool,
+    #[clap(long)]
+    encode_cutscene_data_float_encoding: bool,
 
-    #[clap(long, action)]
+    #[clap(long)]
     framepointer: bool,
 
-    #[clap(long, action)]
+    #[clap(long)]
     mips1: bool,
 
-    #[clap(long, action)]
+    #[clap(long)]
     g3: bool,
 
-    #[clap(long = "KPIC", action)]
+    #[clap(long = "KPIC")]
     kpic: bool,
 
     #[clap(skip)]
@@ -331,7 +331,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 let fname = format!(
                     "{}/{}.s",
                     before[before.find("(").unwrap() + 2..].to_owned(),
-                    after.trim()[..after.len() - 2].trim()
+                    after.trim()[..after.len() - 3].trim()
                 );
 
                 if line.starts_with("INCLUDE_RODATA") {
@@ -357,7 +357,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 // compiler by emitting a bad include directive. (IDO treats
                 // #error as a warning for some reason.)
                 let output_lines_len = output_lines.len();
-                output_lines[output_lines_len - 1] = "#include \"GLOBAL_ASM:{fname}\"".to_owned();
+                output_lines[output_lines_len - 1] = format!("#include \"GLOBAL_ASM:{}\"", fname);
                 continue;
             }
 
@@ -399,7 +399,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
             let output_lines_len = output_lines.len();
             output_lines[output_lines_len - 1] = res_str;
         } else {
-            if args.enable_cutscene_data_float_encoding {
+            if args.encode_cutscene_data_float_encoding {
                 // This is a hack to replace all floating-point numbers in an array of a particular type
                 // (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
                 if cutscene_re.is_match(line) {
@@ -507,36 +507,6 @@ fn run(
 fn parse_args(args: &[String], compile_args: &[String]) -> Result<AsmProcArgs> {
     let mut args = AsmProcArgs::parse_from(args);
 
-    if args.convert_statics.is_none() {
-        args.convert_statics = Some(SymbolVisibility::Local);
-    }
-
-    if args.g3 && args.opt != OptLevel::O2 {
-        Err(anyhow::anyhow!("-g3 is only supported together with -O2"))
-            .context("Invalid arguments")?;
-    }
-
-    if args.mips1 && (!(args.opt == OptLevel::O1 || args.opt == OptLevel::O2) || args.framepointer)
-    {
-        Err(anyhow::anyhow!(
-            "-mips1 is only supported together with -O1 or -O2"
-        ))
-        .context("Invalid arguments")?;
-    }
-
-    let is_pascal = args.filename.ends_with(".p")
-        || args.filename.ends_with(".pas")
-        || args.filename.ends_with(".pp");
-
-    if is_pascal && !(args.opt == OptLevel::O1 || args.opt == OptLevel::O2 || args.g3) {
-        Err(anyhow::anyhow!(
-            "Pascal is only supported together with -O1, -O2 or -O2 -g3"
-        ))
-        .context("Invalid arguments")?;
-    }
-
-    args.pascal = is_pascal;
-
     for x in compile_args.iter().rev() {
         match x.as_str() {
             "-g" => {
@@ -575,6 +545,38 @@ fn parse_args(args: &[String], compile_args: &[String]) -> Result<AsmProcArgs> {
     if compile_args.contains(&"-KPIC".to_string()) {
         args.kpic = true;
     }
+
+    if args.convert_statics.is_none() {
+        args.convert_statics = Some(SymbolVisibility::Local);
+    }
+
+    if args.g3 && args.opt != OptLevel::O2 {
+        Err(anyhow::anyhow!("-g3 is only supported together with -O2"))
+            .context("Invalid arguments")?;
+    }
+
+    if args.mips1 && (!(args.opt == OptLevel::O1 || args.opt == OptLevel::O2) || args.framepointer)
+    {
+        Err(anyhow::anyhow!(
+            "-mips1 is only supported together with -O1 or -O2"
+        ))
+        .context("Invalid arguments")?;
+    }
+
+    let filename_str = args.filename.to_str().unwrap();
+
+    let is_pascal = filename_str.ends_with(".p")
+        || filename_str.ends_with(".pas")
+        || filename_str.ends_with(".pp");
+
+    if is_pascal && !(args.opt == OptLevel::O1 || args.opt == OptLevel::O2 || args.g3) {
+        Err(anyhow::anyhow!(
+            "Pascal is only supported together with -O1, -O2 or -O2 -g3"
+        ))
+        .context("Invalid arguments")?;
+    }
+
+    args.pascal = is_pascal;
 
     Ok(args)
 }
@@ -615,9 +617,10 @@ fn main() -> Result<()> {
     let in_file_str = compile_args.last().unwrap().clone();
     compile_args.pop();
     let in_file = Path::new(in_file_str.as_str());
-    let in_dir = in_file.parent().unwrap();
+    let in_dir = fs::canonicalize(in_file.parent().unwrap())?;
 
     asmproc_flags.push(in_file.to_str().unwrap().to_string());
+    asmproc_flags.insert(0, "clap is complicated".to_string());
     let args = parse_args(&asmproc_flags, &compile_args)?;
 
     // Boolean for debugging purposes
