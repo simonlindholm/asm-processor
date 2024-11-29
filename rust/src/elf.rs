@@ -1,11 +1,13 @@
 use anyhow::Result;
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufWriter, Cursor, Seek, SeekFrom, Write},
     path::PathBuf,
     process::Command,
+    rc::Rc,
 };
 
 use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
@@ -113,7 +115,6 @@ pub struct Symbol {
     pub bind: u8,
     pub name: String,
     visibility: u8,
-    pub new_index: Option<usize>,
 }
 
 impl Symbol {
@@ -136,7 +137,6 @@ impl Symbol {
             bind,
             name,
             visibility,
-            new_index: None,
         })
     }
 
@@ -267,7 +267,7 @@ pub(crate) struct Section {
     pub index: usize,
     pub relocated_by: Vec<usize>,
     rel_target: Option<usize>,
-    pub symbol_entries: Vec<Symbol>,
+    pub symbol_entries: Vec<Rc<RefCell<Symbol>>>,
     pub relocations: Vec<Relocation>,
     pub name: Option<String>,
     pub strtab: Option<usize>,
@@ -384,8 +384,8 @@ impl Section {
     pub fn find_symbol(&self, name: &str) -> Option<(u16, u32)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
-            if s.name == name {
-                return Some((s.data.st_shndx, s.data.st_value));
+            if s.borrow().name == name {
+                return Some((s.borrow().data.st_shndx, s.borrow().data.st_value));
             }
         }
         None
@@ -407,7 +407,7 @@ impl Section {
         for i in 0..(self.data.len() / 16) {
             let symbol =
                 Symbol::new(&self.data[i * 16..(i + 1) * 16], Some(strtab), None, endian).unwrap();
-            self.symbol_entries.push(symbol);
+            self.symbol_entries.push(Rc::new(RefCell::new(symbol)));
         }
     }
 
@@ -808,14 +808,15 @@ impl ElfFile {
 
         let obj_stem = objfile_path.file_stem().unwrap().to_str().unwrap();
 
-        let o_file_name = format!("asm_processor_{}.o", obj_stem);
-        let s_file_name = format!("asm_processor_{}.s", obj_stem);
-
-        let o_file_path = temp_dir.path().join(o_file_name);
+        let o_file_path = temp_dir
+            .path()
+            .join(format!("asm_processor_{}.o", obj_stem));
         let mut o_file = File::create(&o_file_path)?;
         o_file.flush()?;
 
-        let s_file_path = temp_dir.path().join(s_file_name);
+        let s_file_path = temp_dir
+            .path()
+            .join(format!("asm_processor_{}.s", obj_stem));
         let mut s_file = File::create(&s_file_path)?;
         s_file.write_all(asm_prelude.as_bytes())?;
         s_file.write_all("\n".as_bytes())?;
@@ -873,7 +874,7 @@ impl ElfFile {
         let mut jtbl_rodata_positions: HashSet<usize> = HashSet::new();
         let mut last_rodata_pos = 0;
         for sectype in SECTIONS {
-            if !to_copy.contains_key(sectype) {
+            if !to_copy.contains_key(sectype) || to_copy.get(sectype).unwrap().is_empty() {
                 continue;
             }
             let source = asm_objfile.find_section(sectype);
@@ -1040,7 +1041,10 @@ impl ElfFile {
                                 .symtab()
                                 .symbol_entries
                                 .get(rel.sym_index())
-                                .unwrap(),
+                                .unwrap()
+                                .borrow()
+                                .name
+                                .clone(),
                         );
                     }
                 }
@@ -1056,7 +1060,10 @@ impl ElfFile {
                                 .symtab()
                                 .symbol_entries
                                 .get(rel.sym_index())
-                                .unwrap(),
+                                .unwrap()
+                                .borrow()
+                                .name
+                                .clone(),
                         );
                     }
                 }
@@ -1067,27 +1074,26 @@ impl ElfFile {
         // Skip over new local symbols that aren't relocated against, to
         // avoid conflicts.
         let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
-        let mut new_syms: Vec<Symbol> = objfile
+        let mut new_syms: Vec<Rc<RefCell<Symbol>>> = objfile
             .symtab()
             .symbol_entries
             .iter()
             .skip(1)
-            .filter(|x| !x.name.starts_with("_asmpp_"))
-            .cloned() // TODO cloned symbols
+            .filter(|x| !x.borrow().name.starts_with("_asmpp_"))
+            .cloned()
             .collect();
 
         for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
-            let mut s = s.clone(); // TODO cloned symbol
             let is_local = i < asm_objfile.symtab().header.sh_info as usize;
-            if is_local && !relocated_symbols.contains(&s) {
+            if is_local && !relocated_symbols.contains(&s.borrow().name) {
                 continue;
             }
-            if s.name.starts_with("_asmpp_") {
-                assert!(!relocated_symbols.contains(&s));
+            if s.borrow().name.starts_with("_asmpp_") {
+                assert!(!relocated_symbols.contains(&s.borrow().name));
                 continue;
             }
-            if s.data.st_shndx != SHN_UNDEF && s.data.st_shndx != SHN_ABS {
-                let section_name = asm_objfile.sections[s.data.st_shndx as usize]
+            if s.borrow().data.st_shndx != SHN_UNDEF && s.borrow().data.st_shndx != SHN_ABS {
+                let section_name = asm_objfile.sections[s.borrow().data.st_shndx as usize]
                     .name
                     .clone()
                     .unwrap();
@@ -1104,16 +1110,16 @@ impl ElfFile {
                         target_section_name
                     ));
                 }
-                s.data.st_shndx = objfile_section.unwrap().index as u16;
+                s.borrow_mut().data.st_shndx = objfile_section.unwrap().index as u16;
                 // glabels aren't marked as functions, making objdump output confusing. Fix that.
-                if all_text_glabels.contains(s.name.as_str()) {
-                    s.set_type(STT_FUNC);
-                    if func_sizes.contains_key(s.name.as_str()) {
-                        s.data.st_size = func_sizes[s.name.as_str()] as u32;
+                if all_text_glabels.contains(s.borrow().name.as_str()) {
+                    s.borrow_mut().set_type(STT_FUNC);
+                    if func_sizes.contains_key(s.borrow().name.as_str()) {
+                        s.borrow_mut().data.st_size = func_sizes[s.borrow().name.as_str()] as u32;
                     }
                 }
                 if section_name == ".late_rodata" {
-                    if s.data.st_value == 0 {
+                    if s.borrow().data.st_value == 0 {
                         // This must be a symbol corresponding to the whole .late_rodata
                         // section, being referred to from a relocation.
                         // Moving local symbols is tricky, because it requires fixing up
@@ -1123,11 +1129,11 @@ impl ElfFile {
                             "local symbols in .late_rodata are not allowed"
                         ));
                     }
-                    s.data.st_value = moved_late_rodata[&(s.data.st_value)];
+                    s.borrow_mut().data.st_value = moved_late_rodata[&(s.borrow().data.st_value)];
                 }
             }
-            s.data.st_name += strtab_adj as u32;
-            new_syms.push(s.clone()); // TODO cloned symbol
+            s.borrow_mut().data.st_name += strtab_adj as u32;
+            new_syms.push(s.clone());
         }
 
         let make_statics_global = match convert_statics {
@@ -1247,7 +1253,7 @@ impl ElfFile {
                         )?;
                         strtab_index += emitted_symbol_name.len() + 1;
                         new_strtab_data.push(emitted_symbol_name + "\0");
-                        new_syms.push(sym);
+                        new_syms.push(Rc::new(RefCell::new(sym)));
                     }
                     match st {
                         MIPS_DEBUG_ST_FILE
@@ -1279,44 +1285,47 @@ impl ElfFile {
         // Get rid of duplicate symbols, favoring ones that are not UNDEF.
         // Skip this for unnamed local symbols though.
         new_syms.sort_by(|a, b| {
-            if a.data.st_shndx != SHN_UNDEF && b.data.st_shndx == SHN_UNDEF {
+            if a.borrow().data.st_shndx != SHN_UNDEF && b.borrow().data.st_shndx == SHN_UNDEF {
                 Ordering::Less
             } else {
                 Ordering::Greater
             }
         });
-        let mut old_syms = vec![];
+        let mut old_syms: Vec<(Rc<RefCell<Symbol>>, Rc<RefCell<Symbol>>)> = vec![];
         let mut newer_syms = vec![];
         let mut name_to_sym = HashMap::new();
-        let mut replace_by = HashMap::new();
         for s in new_syms.iter_mut() {
-            if s.name == "_gp_disp" {
-                s.set_type(STT_OBJECT);
+            if s.borrow().name == "_gp_disp" {
+                s.borrow_mut().set_type(STT_OBJECT);
             }
-            if s.bind == STB_LOCAL && s.data.st_shndx == SHN_UNDEF {
-                return Err(anyhow::anyhow!("local symbol \"{}\" is undefined", s.name));
+            if s.borrow().bind == STB_LOCAL && s.borrow().data.st_shndx == SHN_UNDEF {
+                return Err(anyhow::anyhow!(
+                    "local symbol \"{}\" is undefined",
+                    s.borrow().name
+                ));
             }
-            if s.name.is_empty() {
-                if s.bind != STB_LOCAL {
+            if s.borrow().name.is_empty() {
+                if s.borrow().bind != STB_LOCAL {
                     return Err(anyhow::anyhow!("global symbol with no name"));
                 }
-                newer_syms.push(s.clone()); // TODO cloned symbol
+                newer_syms.push(s.clone());
             } else {
-                let existing = name_to_sym.get(&s.name);
+                let existing = name_to_sym.get(&s.borrow().name);
                 if existing.is_none() {
-                    name_to_sym.insert(s.name.clone(), s.clone());
-                    newer_syms.push(s.clone()); // TODO cloned symbol
+                    name_to_sym.insert(s.borrow().name.clone(), s.clone());
+                    newer_syms.push(s.clone());
                 } else {
                     let existing = existing.unwrap();
-                    if s.data.st_shndx != SHN_UNDEF
-                        && !(existing.data.st_shndx == s.data.st_shndx
-                            && existing.data.st_value == s.data.st_value)
+                    if s.borrow().data.st_shndx != SHN_UNDEF
+                        && !(existing.borrow().data.st_shndx == s.borrow().data.st_shndx
+                            && existing.borrow().data.st_value == s.borrow().data.st_value)
                     {
-                        return Err(anyhow::anyhow!("symbol \"{}\" defined twice", s.name));
+                        return Err(anyhow::anyhow!(
+                            "symbol \"{}\" defined twice",
+                            s.borrow().name
+                        ));
                     } else {
-                        // TODO does the replace_by need to be the same thing as what's in old_syms?
-                        replace_by.insert(s.clone(), existing.clone()); // TODO cloned symbol
-                        old_syms.push(s.clone()); // TODO cloned symbol
+                        old_syms.push((s.clone(), existing.clone()));
                     }
                 }
             }
@@ -1327,30 +1336,37 @@ impl ElfFile {
         // _gp_disp at the end if it exists.
         new_syms.insert(0, empty_symbol.clone());
         new_syms.sort_by(|a, b| {
-            if a.bind != STB_LOCAL && b.bind == STB_LOCAL {
+            if a.borrow().bind != STB_LOCAL && b.borrow().bind == STB_LOCAL {
                 Ordering::Less
-            } else if a.name == "_gp_disp" && b.name != "_gp_disp" {
+            } else if a.borrow().name == "_gp_disp" && b.borrow().name != "_gp_disp" {
                 Ordering::Greater
             } else {
                 Ordering::Equal
             }
         });
-        let num_local_syms = new_syms.iter().filter(|x| x.bind == STB_LOCAL).count();
+        let num_local_syms = new_syms
+            .iter()
+            .filter(|x| x.borrow().bind == STB_LOCAL)
+            .count();
+        let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
+        let mut new_index = HashMap::new();
 
-        for (i, s) in new_syms.iter_mut().enumerate() {
-            s.new_index = Some(i);
+        for (i, s) in new_syms.iter().enumerate() {
+            new_index.insert(s.borrow().name.clone(), i);
         }
-        for s in old_syms.iter_mut() {
-            s.new_index = replace_by.get(s).unwrap().new_index;
+        for (s, replace_by) in old_syms.iter() {
+            new_index.insert(
+                s.borrow().name.clone(),
+                new_index[&replace_by.borrow().name],
+            );
         }
-        let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.to_bin()).collect();
 
         objfile.symtab_mut().data = new_sym_data;
         objfile.symtab_mut().header.sh_info = num_local_syms as u32;
 
         // Fix up relocation symbol references
         for sectype in SECTIONS {
-            let target = objfile.find_section(sectype).cloned(); // TODO cloned section
+            let target = objfile.find_section(sectype).cloned();
 
             if let Some(target) = target {
                 let symbol_entries = objfile.symtab().symbol_entries.clone();
@@ -1360,7 +1376,7 @@ impl ElfFile {
                     let reltab = &mut objfile.sections[*reltab];
                     let mut nrels = vec![];
                     for rel in reltab.relocations.iter() {
-                        let mut rel = rel.clone(); // TODO cloned relocation
+                        let mut rel = rel.clone();
                         if sectype == ".text"
                             && modified_text_positions.contains(&(rel.data.r_offset as usize))
                             || sectype == ".rodata"
@@ -1369,8 +1385,10 @@ impl ElfFile {
                             // don't include relocations for late_rodata dummy code
                             continue;
                         }
-                        rel.set_sym_index(symbol_entries[rel.sym_index()].new_index.unwrap());
-                        nrels.push(rel.clone()); // TODO cloned relocation
+                        rel.set_sym_index(
+                            new_index[&symbol_entries[rel.sym_index()].borrow().name],
+                        );
+                        nrels.push(rel.clone());
                     }
                     reltab.data = nrels
                         .iter()
@@ -1398,9 +1416,9 @@ impl ElfFile {
                     let reltab = &mut asm_objfile.sections[*reltab].clone();
                     for rel in &mut reltab.relocations {
                         rel.set_sym_index(
-                            asm_objfile.symtab().symbol_entries[rel.sym_index()]
-                                .new_index
-                                .unwrap(),
+                            new_index[&asm_objfile.symtab().symbol_entries[rel.sym_index()]
+                                .borrow()
+                                .name],
                         );
                         if *sectype == ".late_rodata" {
                             rel.data.r_offset = moved_late_rodata[&(rel.data.r_offset)];
@@ -1452,9 +1470,8 @@ impl ElfFile {
         }
         objfile.write(objfile_path.to_path_buf())?;
 
-        // TODO keeping these around for debugging for now
-        // fs::remove_file(s_file_path);
-        // fs::remove_file(o_file_path);
+        fs::remove_file(s_file_path)?;
+        fs::remove_file(o_file_path)?;
         Ok(())
     }
 }

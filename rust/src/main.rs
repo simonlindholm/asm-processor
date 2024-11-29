@@ -283,7 +283,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     let output_enc = args.output_enc.clone();
     let mut global_asm: Option<GlobalAsmBlock> = None;
     let mut asm_functions: Vec<Function> = vec![];
-    let mut output_lines: Vec<String> = vec![format!("\"#line 1 {} \"", infile_path.display())];
+    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\" ", infile_path.display())];
     let mut deps: Vec<String> = vec![];
 
     let mut is_cutscene_data = false;
@@ -293,6 +293,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
 
     for (line_no, line) in read_to_string(infile_path)?.lines().enumerate() {
+        let line_no = line_no + 1;
         let mut raw_line = line.trim().to_owned();
         let line = raw_line.trim_start();
 
@@ -419,7 +420,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     }
 
     let out_str = match encode {
-        false => output_lines.join("\n"),
+        false => format!("{}\n", output_lines.join("\n")),
         true => {
             let newline_encoded = match Encoding::for_label(output_enc.as_bytes()) {
                 Some(encoding) => encoding.encode("\n").0,
@@ -461,7 +462,7 @@ fn run(
     in_functions: Option<&[Function]>,
 ) -> Result<RunResult> {
     if args.post_process.is_none() {
-        let res = parse_source(&args.filename, args, false)?;
+        let res: RunResult = parse_source(&args.filename, args, false)?;
         outfile.write_all(res.output.as_bytes())?;
         return Ok(res);
     } else {

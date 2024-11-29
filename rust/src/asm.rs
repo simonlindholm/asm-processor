@@ -432,11 +432,11 @@ impl GlobalAsmBlock {
                     let line = if state.pascal {
                         state.pascal_assignment_double("d", fval)
                     } else {
-                        format!("*(volatile double*)0 = {};", fval)
+                        format!("*(volatile double*)0 = {:?};", fval)
                     };
                     late_rodata_fn_output.push(line);
                     skip_next = true;
-                    needs_double = true;
+                    needs_double = false;
                     if state.mips1 {
                         // mips1 does not have ldc1/sdc1
                         late_rodata_fn_output.push("".to_owned());
@@ -448,7 +448,7 @@ impl GlobalAsmBlock {
                     let line = if state.pascal {
                         state.pascal_assignment_float("f", fval)
                     } else {
-                        format!("*(volatile float*)0 = {}f;", fval)
+                        format!("*(volatile float*)0 = {:?}f;", fval)
                     };
                     late_rodata_fn_output.push(line);
                     extra_mips1_nop = true;
@@ -615,6 +615,6 @@ impl GlobalAsmBlock {
             ]),
         };
 
-        Ok((vec![], ret_fn))
+        Ok((src, ret_fn))
     }
 }
