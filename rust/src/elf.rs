@@ -318,27 +318,22 @@ impl Section {
 
     fn from_parts(
         sh_name: u32,
-        sh_type: u32,
-        sh_flags: u32,
-        sh_link: u32,
-        sh_info: u32,
-        sh_addralign: u32,
-        sh_entsize: u32,
+        fields: &HeaderFields,
         data: &[u8],
         index: usize,
         endian: Endian,
     ) -> BinResult<Self> {
         let header = SectionHeader {
             sh_name,
-            sh_type,
-            sh_flags,
+            sh_type: fields.sh_type,
+            sh_flags: fields.sh_flags,
             sh_addr: 0,
             sh_offset: 0,
             sh_size: data.len() as u32,
-            sh_link,
-            sh_info,
-            sh_addralign,
-            sh_entsize,
+            sh_link: fields.sh_link,
+            sh_info: fields.sh_info,
+            sh_addralign: fields.sh_addralign,
+            sh_entsize: fields.sh_entsize,
         };
 
         let mut rv = [0; SectionHeader::SIZE];
@@ -508,6 +503,21 @@ struct ToCopyData {
     fn_desc: String,
 }
 
+// satisfy clippy
+pub(crate) struct HeaderFields {
+    sh_type: u32,
+    sh_flags: u32,
+    sh_link: u32,
+    sh_info: u32,
+    sh_addralign: u32,
+    sh_entsize: u32,
+}
+
+pub struct SymPair {
+    sym1: Rc<RefCell<Symbol>>,
+    sym2: Rc<RefCell<Symbol>>,
+}
+
 impl ElfFile {
     pub fn new(data: &[u8]) -> BinResult<Self> {
         let data = data.to_vec();
@@ -604,12 +614,7 @@ impl ElfFile {
     pub fn add_section(
         &mut self,
         name: &str,
-        sh_type: u32,
-        sh_flags: u32,
-        sh_link: u32,
-        sh_info: u32,
-        sh_addralign: u32,
-        sh_entsize: u32,
+        fields: &HeaderFields,
         data: &[u8],
         endian: Endian,
     ) -> &Section {
@@ -618,19 +623,8 @@ impl ElfFile {
             .get_mut(self.header.e_shstrndx as usize)
             .unwrap();
         let sh_name = shstr.add_str(name);
-        let mut s = Section::from_parts(
-            sh_name,
-            sh_type,
-            sh_flags,
-            sh_link,
-            sh_info,
-            sh_addralign,
-            sh_entsize,
-            data,
-            self.sections.len(),
-            endian,
-        )
-        .unwrap();
+        let mut s =
+            Section::from_parts(sh_name, fields, data, self.sections.len(), endian).unwrap();
         s.name = Some(name.to_string());
         s.late_init(&mut self.sections, endian);
         self.sections.push(s);
@@ -784,9 +778,9 @@ impl ElfFile {
                 if !function.text_glabels.is_empty() && sectype == ".text" {
                     func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
                 }
-                prev_locs
-                    .get_mut(sectype.as_str())
-                    .map(|s| *s = loc + *size as u32);
+                if let Some(s) = prev_locs.get_mut(sectype.as_str()) {
+                    *s = loc + *size as u32
+                };
             }
 
             if !ifdefed {
@@ -1311,7 +1305,7 @@ impl ElfFile {
                 Ordering::Greater
             }
         });
-        let mut old_syms: Vec<(Rc<RefCell<Symbol>>, Rc<RefCell<Symbol>>)> = vec![];
+        let mut old_syms: Vec<SymPair> = vec![];
         let mut newer_syms = vec![];
         let mut name_to_sym = HashMap::new();
         for s in new_syms.iter_mut() {
@@ -1345,7 +1339,10 @@ impl ElfFile {
                             s.borrow().name
                         ));
                     } else {
-                        old_syms.push((s.clone(), existing.clone()));
+                        old_syms.push(SymPair {
+                            sym1: s.clone(),
+                            sym2: existing.clone(),
+                        });
                     }
                 }
             }
@@ -1367,10 +1364,10 @@ impl ElfFile {
         for (i, s) in new_syms.iter().enumerate() {
             new_index.insert(s.borrow().name.clone(), i);
         }
-        for (s, replace_by) in old_syms.iter() {
+        for sp in old_syms.iter() {
             new_index.insert(
-                s.borrow().name.clone(),
-                new_index[&replace_by.borrow().name],
+                sp.sym1.borrow().name.clone(),
+                new_index[&sp.sym2.borrow().name],
             );
         }
 
@@ -1452,12 +1449,14 @@ impl ElfFile {
                         } else {
                             objfile.add_section(
                                 format!("rel{}", target_sectype).as_str(),
-                                SHT_REL,
-                                0,
-                                objfile.symtab().index as u32,
-                                target_index,
-                                4,
-                                8,
+                                &HeaderFields {
+                                    sh_type: SHT_REL,
+                                    sh_flags: 0,
+                                    sh_link: objfile.symtab().index as u32,
+                                    sh_info: target_index,
+                                    sh_addralign: 4,
+                                    sh_entsize: 8,
+                                },
                                 &new_data,
                                 endian,
                             );
@@ -1469,12 +1468,14 @@ impl ElfFile {
                     } else {
                         objfile.add_section(
                             format!("rel{}", target_sectype).as_str(),
-                            SHT_REL,
-                            0,
-                            objfile.symtab().index as u32,
-                            target_index,
-                            4,
-                            8,
+                            &HeaderFields {
+                                sh_type: SHT_REL,
+                                sh_flags: 0,
+                                sh_link: objfile.symtab().index as u32,
+                                sh_info: target_index,
+                                sh_addralign: 4,
+                                sh_entsize: 8,
+                            },
                             &new_data,
                             endian,
                         );

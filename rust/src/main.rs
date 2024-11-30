@@ -391,7 +391,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
             deps.append(&mut res.deps);
             let res_str = format!(
                 "{}#line {} '{}'",
-                res.output.clone(),
+                String::from_utf8(res.output.clone())?,
                 line_no + 1,
                 infile_path.file_name().unwrap().to_str().unwrap()
             );
@@ -419,15 +419,19 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
         }
     }
 
-    let out_str = match encode {
-        false => format!("{}\n", output_lines.join("\n")),
+    let out_data = match encode {
+        false => {
+            let str = format!("{}\n", output_lines.join("\n"));
+
+            str.as_bytes().to_vec()
+        }
         true => {
             let newline_encoded = match Encoding::for_label(output_enc.as_bytes()) {
                 Some(encoding) => encoding.encode("\n").0,
                 None => return Err(anyhow::anyhow!("Unsupported encoding")),
             };
 
-            let mut out_data = vec![];
+            let mut data = vec![];
             for line in output_lines {
                 let line_encoded = match Encoding::for_label(output_enc.as_bytes()) {
                     Some(encoding) => encoding.encode(&line).0,
@@ -435,17 +439,17 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                         return Err(anyhow::anyhow!("Unsupported encoding"));
                     }
                 };
-                out_data.write_all(&line_encoded)?;
-                out_data.write_all(&newline_encoded)?;
+                data.write_all(&line_encoded)?;
+                data.write_all(&newline_encoded)?;
             }
-            String::from_utf8(out_data)?
+            data
         }
     };
 
     Ok(RunResult {
         functions: asm_functions,
         deps,
-        output: out_str,
+        output: out_data,
     })
 }
 
@@ -453,17 +457,18 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
 struct RunResult {
     functions: Vec<Function>,
     deps: Vec<String>,
-    output: String,
+    output: Vec<u8>,
 }
 
 fn run(
     args: &AsmProcArgs,
     mut outfile: impl Write,
     in_functions: Option<&[Function]>,
+    use_default_asm_prelude: bool,
 ) -> Result<RunResult> {
     if args.post_process.is_none() {
-        let res: RunResult = parse_source(&args.filename, args, false)?;
-        outfile.write_all(res.output.as_bytes())?;
+        let res: RunResult = parse_source(&args.filename, args, true)?;
+        outfile.write_all(&res.output)?;
         return Ok(res);
     } else {
         let objfile = args.post_process.clone().unwrap();
@@ -476,7 +481,7 @@ fn run(
         let functions = match in_functions {
             Some(funcs) => funcs.to_vec(),
             None => {
-                let res = parse_source(&args.filename, args, false)?;
+                let res = parse_source(&args.filename, args, true)?;
                 res.functions
             }
         };
@@ -485,9 +490,20 @@ fn run(
             return Ok(RunResult::default());
         }
 
-        let asm_prelude = match &args.asm_prelude {
-            Some(prelude) => fs::read_to_string(prelude)?,
-            None => "".to_string(),
+        let asm_prelude = if use_default_asm_prelude {
+            include_str!("../../prelude.inc").to_string()
+        } else {
+            match &args.asm_prelude {
+                Some(prelude) => {
+                    let res = fs::read_to_string(prelude);
+                    if let Ok(res) = res {
+                        res
+                    } else {
+                        return Err(anyhow::anyhow!("Failed to read asm prelude"));
+                    }
+                }
+                None => "".to_string(),
+            }
         };
 
         ElfFile::fixup_objfile(
@@ -627,8 +643,6 @@ fn main() -> Result<()> {
     // Preprocessed files are temporary, set to True to keep a copy
     let keep_preprocessed_files = false;
 
-    let asm_prelude_path = PathBuf::from("prelude.inc");
-
     let temp_dir = TempDir::with_prefix("asm_processor")?;
     let preprocessed_filename = format!(
         "preprocessed_{}.{}",
@@ -642,7 +656,7 @@ fn main() -> Result<()> {
     let preprocessed_path = temp_dir.path().join(&preprocessed_filename);
     let preprocessed_file = File::create(&preprocessed_path)?;
 
-    let res = run(&args, preprocessed_file, None)?;
+    let res = run(&args, preprocessed_file, None, false)?;
 
     if keep_preprocessed_files {
         let kept_files_path = Path::new("asm_processor_preprocessed");
@@ -688,11 +702,10 @@ fn main() -> Result<()> {
     let new_args = AsmProcArgs {
         post_process: Some(out_file.to_path_buf()),
         assembler: Some(assembler_sh),
-        asm_prelude: Some(asm_prelude_path),
         ..args
     };
 
-    run(&new_args, stdout(), Some(&res.functions))?;
+    run(&new_args, stdout(), Some(&res.functions), true)?;
 
     if !res.deps.is_empty() {
         let deps_file = out_file.with_extension("asmproc.d");

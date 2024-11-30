@@ -67,7 +67,7 @@ impl GlobalAsmBlock {
         let mut i = 0;
         let digits = "0123456789"; // 0-7 would be more sane, but this matches GNU as
 
-        while i < line.len() {
+        while i < line.chars().count() {
             let c = line.chars().nth(i).unwrap();
             i += 1;
             if !in_quote {
