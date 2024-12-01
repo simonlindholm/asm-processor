@@ -14,11 +14,15 @@ jobs:
                   override: true
             - name: Build
               run: cargo build --release
+              working-directory: rust
             - name: Lint
               run: cargo clippy -- -D warnings
+              working-directory: rust
             - name: Format
               run: cargo fmt -- --check
+              working-directory: rust
             - name: Check
               run: cargo check
+              working-directory: rust
             - name: Test
               run: ./run-tests.sh
