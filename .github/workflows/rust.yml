@@ -1,0 +1,24 @@
+name: Rust
+on:
+    push:
+    pull_request:
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - name: Install Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  toolchain: stable
+                  override: true
+            - name: Build
+              run: cargo build --release
+            - name: Lint
+              run: cargo clippy -- -D warnings
+            - name: Format
+              run: cargo fmt -- --check
+            - name: Check
+              run: cargo check
+            - name: Test
+              run: ./run-tests.sh
