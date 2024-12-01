@@ -6,6 +6,8 @@ jobs:
     build:
         runs-on: ubuntu-latest
         steps:
+            - name: Install dependencies
+              run: sudo apt-get install binutils-mips-linux-gnu -y
             - uses: actions/checkout@v2
             - name: Install Rust
               uses: actions-rs/toolchain@v1
