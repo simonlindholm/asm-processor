@@ -27,6 +27,6 @@ jobs:
             - name: Test
               run: |
                 wget https://github.com/decompals/ido-static-recomp/releases/download/v1.2/ido-7.1-recomp-linux.tar.gz
-                tar -xvf ido-7.1-recomp-linux.tar.gz
-                export MIPS_CC=cc
+                tar -xf ido-7.1-recomp-linux.tar.gz
+                export MIPS_CC=./cc
                 ./run-tests.sh
