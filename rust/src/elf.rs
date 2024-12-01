@@ -533,8 +533,7 @@ impl ElfFile {
         let header = ElfHeader::new(&data[..ElfHeader::SIZE], endian).unwrap();
         let offset = header.e_shoff as usize;
         let size = header.e_shentsize as usize;
-        let null_section =
-            Section::new(&data[offset as usize..offset + size], &data, 0, endian).unwrap();
+        let null_section = Section::new(&data[offset..offset + size], &data, 0, endian).unwrap();
         let num_sections = if header.e_shnum == 0 {
             null_section.header.sh_size as usize
         } else {
