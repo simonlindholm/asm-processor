@@ -163,62 +163,45 @@ impl Symbol {
     }
 }
 
-#[binrw]
-#[derive(Clone)]
-pub(crate) struct RelocationDataInner {
-    pub r_offset: u32,
-    r_info: u32,
-}
-
-#[binrw]
-#[derive(Clone)]
-pub(crate) struct RelocationData {
-    inner: RelocationDataInner,
-    r_addend: Option<u32>,
-}
-
 #[derive(Clone)]
 pub(crate) struct Relocation {
-    pub data: RelocationData,
+    r_offset: u32,
+    sym_index: usize,
+    rel_type: u32,
+    r_addend: Option<u32>,
 }
 
 impl Relocation {
     fn new(data: &[u8], sh_type: u32, endian: Endian) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
-        let data = if data.len() < size_of::<RelocationData>() {
-            let inner = RelocationDataInner::read_options(&mut cursor, endian, ())?;
-            RelocationData {
-                inner,
-                r_addend: None,
-            }
+        let r_offset = u32::read_options(&mut cursor, endian, ())?;
+        let r_info = u32::read_options(&mut cursor, endian, ())?;
+        let r_addend = if sh_type == SHT_REL {
+            None
         } else {
-            RelocationData::read_options(&mut cursor, endian, ())?
+            Some(u32::read_options(&mut cursor, endian, ())?)
         };
 
-        if sh_type == SHT_REL {
-            assert!(data.r_addend.is_none());
-        } else {
-            assert!(data.r_addend.is_some());
-        }
+        let sym_index = (r_info >> 8) as usize;
+        let rel_type = r_info & 0xff;
 
-        Ok(Self { data })
+        Ok(Self {
+            r_offset,
+            sym_index,
+            rel_type,
+            r_addend,
+        })
     }
 
     pub fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
-
-        self.data.write_options(&mut cursor, endian, ())?;
+        let r_info = ((self.sym_index as u32) << 8) | self.rel_type;
+        self.r_offset.write_options(&mut cursor, endian, ())?;
+        r_info.write_options(&mut cursor, endian, ())?;
+        self.r_addend.write_options(&mut cursor, endian, ())?;
         Ok(rv)
-    }
-
-    pub fn sym_index(&self) -> usize {
-        (self.data.inner.r_info >> 8) as usize
-    }
-
-    pub fn set_sym_index(&mut self, index: usize) {
-        self.data.inner.r_info = ((index as u32) << 8) | (self.data.inner.r_info & 0xff);
     }
 }
 
@@ -1050,7 +1033,7 @@ impl ElfFile {
                             objfile
                                 .symtab()
                                 .symbol_entries
-                                .get(rel.sym_index())
+                                .get(rel.sym_index)
                                 .unwrap()
                                 .clone(),
                         );
@@ -1067,7 +1050,7 @@ impl ElfFile {
                             asm_objfile
                                 .symtab()
                                 .symbol_entries
-                                .get(rel.sym_index())
+                                .get(rel.sym_index)
                                 .unwrap()
                                 .clone(),
                         );
@@ -1378,17 +1361,14 @@ impl ElfFile {
                     for rel in reltab.relocations.iter() {
                         let mut rel = rel.clone();
                         if sectype == ".text"
-                            && modified_text_positions.contains(&(rel.data.inner.r_offset as usize))
+                            && modified_text_positions.contains(&(rel.r_offset as usize))
                             || sectype == ".rodata"
-                                && jtbl_rodata_positions
-                                    .contains(&(rel.data.inner.r_offset as usize))
+                                && jtbl_rodata_positions.contains(&(rel.r_offset as usize))
                         {
                             // don't include relocations for late_rodata dummy code
                             continue;
                         }
-                        rel.set_sym_index(
-                            new_index[&symbol_entries[rel.sym_index()].borrow().name],
-                        );
+                        rel.sym_index = new_index[&symbol_entries[rel.sym_index].borrow().name];
                         nrels.push(rel.clone());
                     }
                     reltab.data = nrels
@@ -1416,13 +1396,12 @@ impl ElfFile {
                 for reltab in &source.relocated_by {
                     let reltab = &mut asm_objfile.sections[*reltab].clone();
                     for rel in &mut reltab.relocations {
-                        rel.set_sym_index(
-                            new_index[&asm_objfile.symtab().symbol_entries[rel.sym_index()]
-                                .borrow()
-                                .name],
-                        );
+                        rel.sym_index = new_index[&asm_objfile.symtab().symbol_entries
+                            [rel.sym_index]
+                            .borrow()
+                            .name];
                         if *sectype == ".late_rodata" {
-                            rel.data.inner.r_offset = moved_late_rodata[&(rel.data.inner.r_offset)];
+                            rel.r_offset = moved_late_rodata[&rel.r_offset];
                         }
                     }
                     let new_data: Vec<u8> = reltab
