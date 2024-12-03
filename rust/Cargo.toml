@@ -2,6 +2,11 @@
 name = "asm-processor"
 version = "0.1.0"
 edition = "2021"
+description = "Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IDO-compiled C."
+license = "Unlicense"
+repository = "https://github.com/ethteck/asm-processor"
+readme = "README.md"
+keywords = ["decompilation", "ido", "mips", "asm"]
 
 [dependencies]
 anyhow = "1.0"

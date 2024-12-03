@@ -38,7 +38,7 @@ impl GlobalAsmBlock {
                 (".late_rodata".to_string(), 0),
             ]),
             fn_ins_inds: vec![],
-            glued_line: "".to_string(),
+            glued_line: String::new(),
             num_lines: 0,
         }
     }
@@ -173,10 +173,10 @@ impl GlobalAsmBlock {
             return Ok(());
         }
         let mut line = self.glued_line.clone() + line;
-        self.glued_line = "".to_string();
+        self.glued_line = String::new();
 
         let re_comment_or_string = Regex::new(r#"#.*|/\*.*?\*/|"(?:\\.|[^\\"])*""#).unwrap();
-        let re_something = Regex::new(r#"^[a-zA-Z0-9_]+:\s*"#).unwrap();
+        let re_something = Regex::new(r"^[a-zA-Z0-9_]+:\s*").unwrap();
 
         let real_line = line.clone();
         line = re_comment_or_string
@@ -211,7 +211,7 @@ impl GlobalAsmBlock {
             self.cur_section = if line == ".rdata" {
                 ".rodata".to_string()
             } else {
-                line.split(",")
+                line.split(',')
                     .next()
                     .unwrap()
                     .to_string()
@@ -250,7 +250,7 @@ impl GlobalAsmBlock {
             self.late_rodata_alignment = value;
             changed_section = true;
         } else if line.starts_with(".incbin") {
-            let siz = line.split(",").last().unwrap().trim().parse::<isize>()?;
+            let siz = line.split(',').last().unwrap().trim().parse::<isize>()?;
             self.add_sized(siz, &real_line)?;
         } else if line.starts_with(".word")
             || line.starts_with(".gpword")
@@ -258,7 +258,7 @@ impl GlobalAsmBlock {
         {
             self.align(4);
 
-            self.add_sized(4 * line.split(",").count() as isize, &real_line)?;
+            self.add_sized(4 * line.split(',').count() as isize, &real_line)?;
         } else if line.starts_with(".double") {
             self.align(4);
 
@@ -282,7 +282,7 @@ impl GlobalAsmBlock {
                     }
                 }
 
-                self.add_sized(8 * line.split(",").count() as isize, &real_line)?;
+                self.add_sized(8 * line.split(',').count() as isize, &real_line)?;
                 emitting_double = true;
             }
         } else if line.starts_with(".space") {
@@ -313,15 +313,15 @@ impl GlobalAsmBlock {
                 &real_line,
             )?;
         } else if line.starts_with(".byte") {
-            self.add_sized(line.split(",").count() as isize, &real_line)?;
+            self.add_sized(line.split(',').count() as isize, &real_line)?;
         } else if line.starts_with(".half")
             || line.starts_with(".hword")
             || line.starts_with(".short")
         {
             self.align(2);
-            self.add_sized(2 * line.split(",").count() as isize, &real_line)?;
+            self.add_sized(2 * line.split(',').count() as isize, &real_line)?;
         } else if line.starts_with(".size") {
-        } else if line.starts_with(".") {
+        } else if line.starts_with('.') {
             return Err(anyhow::anyhow!(format!(
                 "asm directive not supported {}",
                 real_line

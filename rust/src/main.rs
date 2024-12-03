@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use asm::GlobalAsmBlock;
-use clap::{Args, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use elf::ElfFile;
 use encoding_rs::Encoding;
 use regex::Regex;
@@ -97,7 +97,7 @@ impl GlobalState {
         if self.pascal {
             "end;".to_string()
         } else {
-            "}".to_string()
+            '}'.to_string()
         }
     }
 
@@ -127,21 +127,6 @@ enum SymbolVisibility {
     Local,
     Global,
     GlobalWithFilename,
-}
-#[derive(Args, Debug)]
-#[group(required = false, multiple = false)]
-struct OptFlag {
-    #[clap(long = "O0")]
-    o0: bool,
-
-    #[clap(long = "O1")]
-    o1: bool,
-
-    #[clap(long = "O2")]
-    o2: bool,
-
-    #[clap(long = "O3")]
-    g: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -303,7 +288,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
         output_lines.push("".to_owned());
 
         if let Some(ref mut gasm) = global_asm {
-            if line.starts_with(")") {
+            if line.starts_with(')') {
                 let (src, fun) = gasm.finish(&mut state)?;
                 for (i, line2) in src.iter().enumerate() {
                     output_lines[start_index.unwrap() + i] = line2.clone();
@@ -330,7 +315,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 let (before, after) = line.split_once("\",").unwrap();
                 let fname = format!(
                     "{}/{}.s",
-                    before[before.find("(").unwrap() + 2..].to_owned(),
+                    before[before.find('(').unwrap() + 2..].to_owned(),
                     after.trim()[..after.len() - 3].trim()
                 );
 
@@ -341,7 +326,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 }
             } else {
                 // GLOBAL_ASM("path/to/file.s")
-                let fname = line[line.find("(").unwrap() + 2..line.len() - 2].to_string();
+                let fname = line[line.find('(').unwrap() + 2..line.len() - 2].to_string();
                 (vec![], fname)
             };
 
@@ -419,31 +404,28 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
         }
     }
 
-    let out_data = match encode {
-        false => {
-            let str = format!("{}\n", output_lines.join("\n"));
+    let out_data = if encode {
+        let newline_encoded = match Encoding::for_label(output_enc.as_bytes()) {
+            Some(encoding) => encoding.encode("\n").0,
+            None => return Err(anyhow::anyhow!("Unsupported encoding")),
+        };
 
-            str.as_bytes().to_vec()
-        }
-        true => {
-            let newline_encoded = match Encoding::for_label(output_enc.as_bytes()) {
-                Some(encoding) => encoding.encode("\n").0,
-                None => return Err(anyhow::anyhow!("Unsupported encoding")),
+        let mut data = vec![];
+        for line in output_lines {
+            let line_encoded = match Encoding::for_label(output_enc.as_bytes()) {
+                Some(encoding) => encoding.encode(&line).0,
+                None => {
+                    return Err(anyhow::anyhow!("Unsupported encoding"));
+                }
             };
-
-            let mut data = vec![];
-            for line in output_lines {
-                let line_encoded = match Encoding::for_label(output_enc.as_bytes()) {
-                    Some(encoding) => encoding.encode(&line).0,
-                    None => {
-                        return Err(anyhow::anyhow!("Unsupported encoding"));
-                    }
-                };
-                data.write_all(&line_encoded)?;
-                data.write_all(&newline_encoded)?;
-            }
-            data
+            data.write_all(&line_encoded)?;
+            data.write_all(&newline_encoded)?;
         }
+        data
+    } else {
+        let str = format!("{}\n", output_lines.join("\n"));
+
+        str.as_bytes().to_vec()
     };
 
     Ok(RunResult {
@@ -478,12 +460,11 @@ fn run(
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Assembler command is required when post-processing"))?;
 
-        let functions = match in_functions {
-            Some(funcs) => funcs.to_vec(),
-            None => {
-                let res = parse_source(&args.filename, args, true)?;
-                res.functions
-            }
+        let functions = if let Some(funcs) = in_functions {
+            funcs.to_vec()
+        } else {
+            let res = parse_source(&args.filename, args, true)?;
+            res.functions
         };
 
         if (functions.is_empty()) && !args.force {
@@ -502,7 +483,7 @@ fn run(
                         return Err(anyhow::anyhow!("Failed to read asm prelude"));
                     }
                 }
-                None => "".to_string(),
+                None => String::new(),
             }
         };
 
@@ -545,9 +526,6 @@ fn parse_args(args: &[String], compile_args: &[String]) -> Result<AsmProcArgs> {
         }
     }
 
-    if compile_args.contains(&"-mips1".to_string()) {
-        args.mips1 = true;
-    }
     if !compile_args.contains(&"-mips2".to_string()) {
         args.mips1 = true;
     }
@@ -603,7 +581,7 @@ fn main() -> Result<()> {
     let all_args = os_args[1..].to_vec();
     let sep0 = all_args
         .iter()
-        .position(|arg| !arg.starts_with("-"))
+        .position(|arg| !arg.starts_with('-'))
         .expect("No first separator found");
     let sep1 = all_args
         .iter()
@@ -719,7 +697,7 @@ fn main() -> Result<()> {
         )?;
 
         for dep in res.deps {
-            writeln!(deps_file, "\n{}:", dep)?;
+            writeln!(deps_file, "\n{dep}:")?;
         }
     }
 
