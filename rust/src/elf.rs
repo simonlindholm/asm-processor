@@ -803,22 +803,20 @@ impl ElfFile {
         let o_file_path = temp_dir
             .path()
             .join(format!("asm_processor_{}.o", obj_stem));
-        let mut o_file = File::create(&o_file_path)?;
-        o_file.flush()?;
-
         let s_file_path = temp_dir
             .path()
             .join(format!("asm_processor_{}.s", obj_stem));
-        let mut s_file = File::create(&s_file_path)?;
-        s_file.write_all(asm_prelude.as_bytes())?;
-        s_file.write_all("\n".as_bytes())?;
-
-        for line in asm {
-            let line = output_enc.encode(&line)?;
-            s_file.write_all(&line)?;
+        {
+            let mut s_file = File::create(&s_file_path)?;
+            s_file.write_all(asm_prelude.as_bytes())?;
             s_file.write_all("\n".as_bytes())?;
+
+            for line in asm {
+                let line = output_enc.encode(&line)?;
+                s_file.write_all(&line)?;
+                s_file.write_all("\n".as_bytes())?;
+            }
         }
-        s_file.flush()?;
 
         let status = Command::new("sh")
             .arg("-c")
