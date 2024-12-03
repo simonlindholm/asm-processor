@@ -276,6 +276,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     let mut start_index: Option<usize> = None;
 
     let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
+    let float_re = Regex::new(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")?;
 
     for (line_no, line) in read_to_string(infile_path)?.lines().enumerate() {
         let line_no = line_no + 1;
@@ -394,9 +395,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 }
 
                 if is_cutscene_data {
-                    raw_line = cutscene_re
-                        .replace_all(&raw_line, repl_float_hex)
-                        .into_owned();
+                    raw_line = float_re.replace_all(&raw_line, repl_float_hex).into_owned();
                 }
             }
             let output_lines_len = output_lines.len();
