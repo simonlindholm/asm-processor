@@ -493,7 +493,7 @@ pub struct ElfFile {
     pub endian: Endian,
     header: ElfHeader,
     pub sections: Vec<Section>,
-    symtab: Option<usize>,
+    symtab: usize,
 }
 
 struct ToCopyData {
@@ -547,15 +547,11 @@ impl ElfFile {
             sections.push(section);
         }
 
-        let mut symtab = None;
-        for s in &sections {
-            if s.header.sh_type == SHT_SYMTAB {
-                assert!(symtab.is_none());
-                symtab = Some(s.index);
-                break;
-            }
-        }
-        assert!(symtab.is_some());
+        let symtab = sections
+            .iter()
+            .find(|s| s.header.sh_type == SHT_SYMTAB)
+            .unwrap()
+            .index;
 
         let shstr = sections.get(header.e_shstrndx as usize).unwrap().clone();
         let mut relocated_bys = vec![];
@@ -603,11 +599,11 @@ impl ElfFile {
     }
 
     pub fn symtab(&self) -> &Section {
-        self.sections.get(self.symtab.unwrap()).unwrap()
+        self.sections.get(self.symtab).unwrap()
     }
 
     pub fn symtab_mut(&mut self) -> &mut Section {
-        self.sections.get_mut(self.symtab.unwrap()).unwrap()
+        self.sections.get_mut(self.symtab).unwrap()
     }
 
     pub fn add_section(
@@ -652,10 +648,7 @@ impl ElfFile {
         }
     }
 
-    pub fn write(&mut self, filename: PathBuf) -> BinResult<()> {
-        let mut file = std::fs::File::create(filename).unwrap();
-        let mut writer = BufWriter::new(&mut file);
-
+    pub fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
         self.header.e_shnum = self.sections.len() as u16;
         writer
             .write_all(&self.header.to_bin(self.endian).unwrap())
@@ -663,7 +656,7 @@ impl ElfFile {
 
         for s in &mut self.sections {
             if s.header.sh_type != SHT_NOBITS && s.header.sh_type != SHT_NULL {
-                Self::pad_out(&mut writer, s.header.sh_addralign as usize);
+                Self::pad_out(writer, s.header.sh_addralign as usize);
                 let old_offset = s.header.sh_offset;
                 s.header.sh_offset = writer.stream_position().unwrap() as u32;
                 if s.header.sh_type == SHT_MIPS_DEBUG && s.header.sh_offset != old_offset {
@@ -674,7 +667,7 @@ impl ElfFile {
             }
         }
 
-        Self::pad_out(&mut writer, 4);
+        Self::pad_out(writer, 4);
         self.header.e_shoff = writer.stream_position().unwrap() as u32;
 
         for s in &mut self.sections {
@@ -737,7 +730,7 @@ impl ElfFile {
                 }
                 let temp_name = temp_name.as_ref().unwrap();
                 if *size == 0 {
-                    return Err(anyhow::anyhow!("Size of section {} is 0", temp_name));
+                    panic!("Size of section {} is 0", temp_name);
                 }
                 let loc = objfile.symtab().find_symbol(temp_name);
                 if loc.is_none() {
@@ -752,11 +745,11 @@ impl ElfFile {
                     // On the other hand, if it generates too much, we don't have
                     // a good way of discovering that error: it's indistinguishable
                     // from a static symbol occurring after the GLOBAL_ASM block.
-                    return Err(anyhow::anyhow!(format!(
-                    "Wrongly computed size for section {} (diff {}). This is an asm-processor bug!",
-                    sectype,
-                    prev_loc - loc
-                )));
+                    panic!(
+                        "Wrongly computed size for section {} (diff {}). This is an asm-processor bug!",
+                        sectype,
+                        prev_loc - loc
+                    );
                 }
                 if loc != *prev_loc {
                     asm.push(format!(".section {}", sectype));
@@ -777,9 +770,7 @@ impl ElfFile {
                 if !function.text_glabels.is_empty() && sectype == ".text" {
                     func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
                 }
-                if let Some(s) = prev_locs.get_mut(sectype.as_str()) {
-                    *s = loc + *size as u32
-                };
+                *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size as u32;
             }
 
             if !ifdefed {
@@ -1482,7 +1473,10 @@ impl ElfFile {
                 }
             }
         }
-        objfile.write(objfile_path.to_path_buf())?;
+
+        let mut file = std::fs::File::create(objfile_path).unwrap();
+        let mut writer = BufWriter::new(&mut file);
+        objfile.write(&mut writer)?;
 
         fs::remove_file(s_file_path)?;
         fs::remove_file(o_file_path)?;

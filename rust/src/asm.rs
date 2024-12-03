@@ -5,16 +5,38 @@ use regex::Regex;
 
 use crate::{Function, GlobalState};
 
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+enum Section {
+    Text,
+    Data,
+    Rodata,
+    LateRodata,
+    Bss,
+}
+
+impl Section {
+    fn from_str(name: &str) -> Option<Section> {
+        match name {
+            ".text" => Some(Section::Text),
+            ".data" => Some(Section::Data),
+            ".rodata" => Some(Section::Rodata),
+            ".late_rodata" => Some(Section::LateRodata),
+            ".bss" => Some(Section::Bss),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GlobalAsmBlock {
     fn_desc: String,
-    cur_section: String,
+    cur_section: Section,
     asm_conts: Vec<String>,
     late_rodata_asm_conts: Vec<String>,
     late_rodata_alignment: usize,
     late_rodata_alignment_from_context: bool,
     text_glabels: Vec<String>,
-    fn_section_sizes: HashMap<String, usize>,
+    fn_section_sizes: HashMap<Section, usize>,
     fn_ins_inds: Vec<(usize, usize)>,
     glued_line: String,
     num_lines: usize,
@@ -24,18 +46,18 @@ impl GlobalAsmBlock {
     pub fn new(fn_desc: String) -> Self {
         Self {
             fn_desc,
-            cur_section: ".text".to_string(),
+            cur_section: Section::Text,
             asm_conts: vec![],
             late_rodata_asm_conts: vec![],
             late_rodata_alignment: 0,
             late_rodata_alignment_from_context: false,
             text_glabels: vec![],
             fn_section_sizes: HashMap::from([
-                (".text".to_string(), 0),
-                (".data".to_string(), 0),
-                (".bss".to_string(), 0),
-                (".rodata".to_string(), 0),
-                (".late_rodata".to_string(), 0),
+                (Section::Text, 0),
+                (Section::Data, 0),
+                (Section::Bss, 0),
+                (Section::Rodata, 0),
+                (Section::LateRodata, 0),
             ]),
             fn_ins_inds: vec![],
             glued_line: String::new(),
@@ -130,15 +152,14 @@ impl GlobalAsmBlock {
 
     fn align(&mut self, n: usize) {
         while self.fn_section_sizes[&self.cur_section] % n != 0 {
-            self.fn_section_sizes.insert(
-                self.cur_section.clone(),
-                self.fn_section_sizes[&self.cur_section] + 1,
-            );
+            *self.fn_section_sizes.get_mut(&self.cur_section).unwrap() += 1;
         }
     }
 
     fn add_sized(&mut self, size: isize, line: &str) -> Result<()> {
-        if (self.cur_section == ".text" || self.cur_section == ".late_rodata") && size % 4 != 0 {
+        if (self.cur_section == Section::Text || self.cur_section == Section::LateRodata)
+            && size % 4 != 0
+        {
             return Err(anyhow::anyhow!("size must be a multiple of 4 {}", line));
         }
 
@@ -146,13 +167,9 @@ impl GlobalAsmBlock {
             return Err(anyhow::anyhow!("size cannot be negative {}", line));
         }
 
-        // add size to fn_section_sizes current section
-        self.fn_section_sizes.insert(
-            self.cur_section.clone(),
-            self.fn_section_sizes[&self.cur_section] + size as usize,
-        );
+        *self.fn_section_sizes.get_mut(&self.cur_section).unwrap() += size as usize;
 
-        if self.cur_section == ".text" {
+        if self.cur_section == Section::Text {
             if self.text_glabels.is_empty() {
                 return Err(anyhow::anyhow!(
                     ".text block without an initial glabel {}",
@@ -176,19 +193,19 @@ impl GlobalAsmBlock {
         self.glued_line = String::new();
 
         let re_comment_or_string = Regex::new(r#"#.*|/\*.*?\*/|"(?:\\.|[^\\"])*""#).unwrap();
-        let re_something = Regex::new(r"^[a-zA-Z0-9_]+:\s*").unwrap();
+        let re_label = Regex::new(r"^[a-zA-Z0-9_]+:\s*").unwrap();
 
         let real_line = line.clone();
         line = re_comment_or_string
             .replace_all(&line, Self::re_comment_replacer)
             .into_owned();
         line = line.trim().to_string();
-        line = re_something.replace_all(&line, "").into_owned();
+        line = re_label.replace_all(&line, "").into_owned();
         let mut changed_section = false;
         let mut emitting_double = false;
 
         if (line.starts_with("glabel ") || line.starts_with("jlabel "))
-            && self.cur_section == ".text"
+            && self.cur_section == Section::Text
         {
             self.text_glabels
                 .push(line.split_whitespace().nth(1).unwrap().to_string());
@@ -209,26 +226,19 @@ impl GlobalAsmBlock {
         {
             // section change
             self.cur_section = if line == ".rdata" {
-                ".rodata".to_string()
+                Section::Rodata
             } else {
-                line.split(',')
-                    .next()
-                    .unwrap()
-                    .to_string()
-                    .split_whitespace()
-                    .last()
-                    .unwrap()
-                    .to_string()
+                let first_arg = line.split(',').next().unwrap().to_string();
+                let name = first_arg.split_whitespace().last().unwrap();
+                match Section::from_str(name) {
+                    Some(s) => s,
+                    None => return Err(anyhow::anyhow!("Unknown section: {}", name)),
+                }
             };
-
-            match self.cur_section.as_str() {
-                ".data" | ".text" | ".rodata" | ".late_rodata" | ".bss" => {}
-                _ => return Err(anyhow::anyhow!("Unknown section: {}", self.cur_section)),
-            }
 
             changed_section = true;
         } else if line.starts_with(".late_rodata_alignment") {
-            if self.cur_section != ".late_rodata" {
+            if self.cur_section != Section::LateRodata {
                 return Err(anyhow::anyhow!(format!(
                     ".late_rodata_alignment must occur within .late_rodata section\n{}",
                     real_line
@@ -262,7 +272,7 @@ impl GlobalAsmBlock {
         } else if line.starts_with(".double") {
             self.align(4);
 
-            if self.cur_section == ".late_rodata" {
+            if self.cur_section == Section::LateRodata {
                 let align8 = self.fn_section_sizes[&self.cur_section] % 8;
                 // Automatically set late_rodata_alignment, so the generated C code uses doubles.
                 // This gives us correct alignment for the transferred doubles even when the
@@ -335,7 +345,7 @@ impl GlobalAsmBlock {
             // cases), or change how this program is invoked.
             // Similarly, we can't currently deal with pseudo-instructions
             // that expand to several real instructions.
-            if self.cur_section != ".text" {
+            if self.cur_section != Section::Text {
                 return Err(anyhow::anyhow!(format!(
                     "instruction or macro call in non-.text section? not supported\n{}",
                     real_line
@@ -344,7 +354,7 @@ impl GlobalAsmBlock {
             self.add_sized(4, &real_line)?;
         }
 
-        if self.cur_section == ".late_rodata" {
+        if self.cur_section == Section::LateRodata {
             if !changed_section {
                 if emitting_double {
                     self.late_rodata_asm_conts.push(".align 0".to_string());
@@ -369,14 +379,14 @@ impl GlobalAsmBlock {
         let mut jtbl_rodata_size = 0;
         let mut late_rodata_fn_output = vec![];
 
-        let num_instr = self.fn_section_sizes[".text"] / 4;
+        let num_instr = self.fn_section_sizes[&Section::Text] / 4;
 
-        if self.fn_section_sizes[".late_rodata"] > 0 {
+        if self.fn_section_sizes[&Section::LateRodata] > 0 {
             // Generate late rodata by emitting unique float constants.
             // This requires 3 instructions for each 4 bytes of rodata.
             // If we know alignment, we can use doubles, which give 3
             // instructions for 8 bytes of rodata.
-            let size = self.fn_section_sizes[".late_rodata"] / 4;
+            let size = self.fn_section_sizes[&Section::LateRodata] / 4;
             let mut skip_next = false;
             let mut needs_double = self.late_rodata_alignment != 0;
             let mut extra_mips1_nop = false;
@@ -470,12 +480,12 @@ impl GlobalAsmBlock {
         }
 
         let mut text_name = None;
-        if self.fn_section_sizes[".text"] > 0 || !late_rodata_fn_output.is_empty() {
+        if self.fn_section_sizes[&Section::Text] > 0 || !late_rodata_fn_output.is_empty() {
             let new_name = state.make_name("func");
             src[0] = state.func_prologue(&new_name);
             text_name = Some(new_name);
             src[self.num_lines] = state.func_epilogue();
-            let instr_count = self.fn_section_sizes[".text"] / 4;
+            let instr_count = self.fn_section_sizes[&Section::Text] / 4;
             if instr_count < state.min_instr_count {
                 return Err(anyhow::anyhow!(format!("too short .text block",)));
             }
@@ -549,7 +559,7 @@ impl GlobalAsmBlock {
         }
 
         let mut rodata_name = None;
-        if self.fn_section_sizes[".rodata"] > 0 {
+        if self.fn_section_sizes[&Section::Rodata] > 0 {
             if state.pascal {
                 return Err(anyhow::anyhow!(format!(
                     ".rodata isn't supported with Pascal for now"
@@ -558,24 +568,27 @@ impl GlobalAsmBlock {
             let new_name = state.make_name("rodata");
             src[self.num_lines] += format!(
                 " const char {}[{}] = {{1}};",
-                new_name, self.fn_section_sizes[".rodata"]
+                new_name,
+                self.fn_section_sizes[&Section::Rodata]
             )
             .as_str();
             rodata_name = Some(new_name);
         }
 
         let mut data_name = None;
-        if self.fn_section_sizes[".data"] > 0 {
+        if self.fn_section_sizes[&Section::Data] > 0 {
             let new_name = state.make_name("data");
             let line = if state.pascal {
                 format!(
                     " var {}: packed array[1..{}] of char := [otherwise: 0];",
-                    new_name, self.fn_section_sizes[".data"]
+                    new_name,
+                    self.fn_section_sizes[&Section::Data]
                 )
             } else {
                 format!(
                     " char {}[{}] = {{1}};",
-                    new_name, self.fn_section_sizes[".data"]
+                    new_name,
+                    self.fn_section_sizes[&Section::Data]
                 )
             };
             src[self.num_lines] += line.as_str();
@@ -583,15 +596,19 @@ impl GlobalAsmBlock {
         }
 
         let mut bss_name = None;
-        if self.fn_section_sizes[".bss"] > 0 {
+        if self.fn_section_sizes[&Section::Bss] > 0 {
             let new_name = state.make_name("bss");
             if state.pascal {
                 return Err(anyhow::anyhow!(format!(
                     ".bss isn't supported with Pascal for now"
                 )));
             }
-            src[self.num_lines] +=
-                format!(" char {}[{}];", new_name, self.fn_section_sizes[".bss"]).as_str();
+            src[self.num_lines] += format!(
+                " char {}[{}];",
+                new_name,
+                self.fn_section_sizes[&Section::Bss]
+            )
+            .as_str();
             bss_name = Some(new_name);
         }
 
@@ -605,19 +622,19 @@ impl GlobalAsmBlock {
             data: HashMap::from([
                 (
                     ".text".to_string(),
-                    (text_name, self.fn_section_sizes[".text"]),
+                    (text_name, self.fn_section_sizes[&Section::Text]),
                 ),
                 (
                     ".data".to_string(),
-                    (data_name, self.fn_section_sizes[".data"]),
+                    (data_name, self.fn_section_sizes[&Section::Data]),
                 ),
                 (
                     ".rodata".to_string(),
-                    (rodata_name, self.fn_section_sizes[".rodata"]),
+                    (rodata_name, self.fn_section_sizes[&Section::Rodata]),
                 ),
                 (
                     ".bss".to_string(),
-                    (bss_name, self.fn_section_sizes[".bss"]),
+                    (bss_name, self.fn_section_sizes[&Section::Bss]),
                 ),
             ]),
         };
