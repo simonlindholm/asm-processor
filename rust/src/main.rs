@@ -634,7 +634,10 @@ fn main() -> Result<()> {
         .collect::<Vec<String>>()
         .join(" ");
     let mut compile_args = Vec::from(&all_args[sep2 + 1..]);
-    let out_ind = compile_args.iter().position(|arg| arg == "-o").unwrap();
+    let out_ind = compile_args
+        .iter()
+        .position(|arg| arg == "-o")
+        .expect("Missing -o argument");
     let out_filename = &compile_args[out_ind + 1].clone();
     let out_file = Path::new(out_filename);
     compile_args.remove(out_ind + 1);
@@ -642,7 +645,7 @@ fn main() -> Result<()> {
     let in_file_str = compile_args.last().unwrap().clone();
     compile_args.pop();
     let in_file = Path::new(in_file_str.as_str());
-    let in_dir = fs::canonicalize(in_file.parent().unwrap())?;
+    let in_dir = fs::canonicalize(in_file.parent().unwrap().join("."))?;
 
     asmproc_flags.push(in_file.to_str().unwrap().to_string());
     asmproc_flags.insert(0, "clap is complicated".to_string());
