@@ -307,15 +307,14 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
         args.mips1,
         args.pascal,
     );
-    let output_enc = args.output_enc.clone();
-    let mut global_asm: Option<GlobalAsmBlock> = None;
+    let output_enc = &args.output_enc;
+    let mut global_asm: Option<(GlobalAsmBlock, usize)> = None;
     let mut asm_functions: Vec<Function> = vec![];
     let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\" ", infile_path.display())];
     let mut deps: Vec<String> = vec![];
 
     let mut is_cutscene_data = false;
     let mut is_early_include = false;
-    let mut start_index: Option<usize> = None;
 
     let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
     let float_re = Regex::new(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")?;
@@ -330,11 +329,11 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
         // reasonable content further down.
         output_lines.push("".to_owned());
 
-        if let Some(ref mut gasm) = global_asm {
+        if let Some((ref mut gasm, start_index)) = global_asm {
             if line.starts_with(')') {
                 let (src, fun) = gasm.finish(&mut state)?;
                 for (i, line2) in src.iter().enumerate() {
-                    output_lines[start_index.unwrap() + i] = line2.clone();
+                    output_lines[start_index + i] = line2.clone();
                 }
                 asm_functions.push(fun);
                 global_asm = None;
@@ -342,11 +341,10 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 gasm.process_line(&raw_line, output_enc)?;
             }
         } else if line == "GLOBAL_ASM(" || line == "#pragma GLOBAL_ASM(" {
-            global_asm = Some(GlobalAsmBlock::new(format!(
-                "GLOBAL_ASM block at line {}",
-                &line_no.to_string()
-            )));
-            start_index = Some(output_lines.len());
+            global_asm = Some((
+                GlobalAsmBlock::new(format!("GLOBAL_ASM block at line {}", &line_no.to_string())),
+                output_lines.len(),
+            ));
         } else if ((line.starts_with("GLOBAL_ASM(\"") || line.starts_with("#pragma GLOBAL_ASM(\""))
             && line.ends_with("\")"))
             || ((line.starts_with("INCLUDE_ASM(\"") || line.starts_with("INCLUDE_RODATA(\""))
