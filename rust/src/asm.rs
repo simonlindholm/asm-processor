@@ -267,8 +267,8 @@ impl GlobalAsmBlock {
             self.late_rodata_alignment = value;
             changed_section = true;
         } else if line.starts_with(".incbin") {
-            let siz = line.split(',').last().unwrap().trim().parse::<isize>()?;
-            self.add_sized(siz, &real_line)?;
+            let size = line.split(',').last().unwrap().trim().parse::<isize>()?;
+            self.add_sized(size, &real_line)?;
         } else if line.starts_with(".word")
             || line.starts_with(".gpword")
             || line.starts_with(".float")
@@ -303,8 +303,8 @@ impl GlobalAsmBlock {
                 emitting_double = true;
             }
         } else if line.starts_with(".space") {
-            let siz = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
-            self.add_sized(siz, &real_line)?;
+            let size = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
+            self.add_sized(size, &real_line)?;
         } else if line.starts_with(".balign") {
             let align = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             if align != 4 {

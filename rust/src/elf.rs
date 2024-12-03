@@ -17,8 +17,8 @@ use temp_dir::TempDir;
 use crate::{Encoding, Function, SymbolVisibility};
 
 const EI_NIDENT: usize = 16;
-const EI_CLASS: u32 = 4;
-const EI_DATA: u32 = 5;
+const EI_CLASS: usize = 4;
+const EI_DATA: usize = 5;
 
 const SHN_UNDEF: u16 = 0;
 const SHN_ABS: u16 = 0xfff1;
@@ -79,7 +79,7 @@ impl ElfHeader {
 
         let header = Self::read_options(&mut cursor, endian, ())?;
 
-        assert_eq!(header.e_ident[EI_CLASS as usize], 1);
+        assert_eq!(header.e_ident[EI_CLASS], 1);
         assert_eq!(header.e_type, 1); // relocatable
         assert_eq!(header.e_machine, 8); // MIPS I Architecture
         assert_eq!(header.e_phoff, 0); // no program header
@@ -165,7 +165,7 @@ impl Symbol {
 
 #[derive(Clone)]
 pub(crate) struct Relocation {
-    r_offset: u32,
+    r_offset: usize,
     sym_index: usize,
     rel_type: u32,
     r_addend: Option<u32>,
@@ -175,7 +175,7 @@ impl Relocation {
     fn new(data: &[u8], sh_type: u32, endian: Endian) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
-        let r_offset = u32::read_options(&mut cursor, endian, ())?;
+        let r_offset = u32::read_options(&mut cursor, endian, ())? as usize;
         let r_info = u32::read_options(&mut cursor, endian, ())?;
         let r_addend = if sh_type == SHT_REL {
             None
@@ -197,8 +197,9 @@ impl Relocation {
     pub fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
+        let r_offset = self.r_offset as u32;
         let r_info = ((self.sym_index as u32) << 8) | self.rel_type;
-        self.r_offset.write_options(&mut cursor, endian, ())?;
+        r_offset.write_options(&mut cursor, endian, ())?;
         r_info.write_options(&mut cursor, endian, ())?;
         self.r_addend.write_options(&mut cursor, endian, ())?;
         Ok(rv)
@@ -373,19 +374,22 @@ impl Section {
         }
     }
 
-    pub fn find_symbol(&self, name: &str) -> Option<(u16, u32)> {
+    pub fn find_symbol(&self, name: &str) -> Option<(usize, usize)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
             if s.borrow().name == name {
-                return Some((s.borrow().data.st_shndx, s.borrow().data.st_value));
+                return Some((
+                    s.borrow().data.st_shndx as usize,
+                    s.borrow().data.st_value as usize,
+                ));
             }
         }
         None
     }
 
-    pub fn find_symbol_in_section(&self, name: &str, section: &Section) -> Option<u32> {
+    pub fn find_symbol_in_section(&self, name: &str, section: &Section) -> Option<usize> {
         let (st_shndx, st_value) = self.find_symbol(name)?;
-        assert_eq!(st_shndx, section.index as u16);
+        assert_eq!(st_shndx, section.index);
         Some(st_value)
     }
 
@@ -480,7 +484,7 @@ pub struct ElfFile {
 }
 
 struct ToCopyData {
-    loc: u32,
+    loc: usize,
     size: usize,
     temp_name: String,
     fn_desc: String,
@@ -506,7 +510,7 @@ impl ElfFile {
         let data = data.to_vec();
         assert_eq!(data[..4], [0x7f, b'E', b'L', b'F']);
 
-        let endian: Endian = if data[EI_DATA as usize] == 1 {
+        let endian: Endian = if data[EI_DATA] == 1 {
             Endian::Little
         } else if data[5] == 2 {
             Endian::Big
@@ -548,7 +552,7 @@ impl ElfFile {
             if s.header.sh_type == SHT_SYMTAB {
                 s.init_symbols(&sections_before, endian);
             } else if s.is_rel() {
-                relocated_bys.push((s.header.sh_info, s.index));
+                relocated_bys.push((s.header.sh_info as usize, s.index));
 
                 s.rel_target = Some(sections_before[s.header.sh_info as usize].index);
                 s.init_relocs(endian);
@@ -556,7 +560,7 @@ impl ElfFile {
         }
 
         for (target, reloc) in relocated_bys {
-            let s = sections.get_mut(target as usize).unwrap();
+            let s = sections.get_mut(target).unwrap();
             s.relocated_by.push(reloc);
         }
 
@@ -753,7 +757,7 @@ impl ElfFile {
                 if !function.text_glabels.is_empty() && sectype == ".text" {
                     func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
                 }
-                *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size as u32;
+                *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size;
             }
 
             if !ifdefed {
@@ -823,8 +827,12 @@ impl ElfFile {
             .arg(format!(
                 "{} {} -o {}",
                 assembler,
-                s_file_path.display(),
-                o_file_path.display()
+                shlex::try_quote(s_file_path.to_str().unwrap())
+                    .unwrap()
+                    .into_owned(),
+                shlex::try_quote(o_file_path.to_str().unwrap())
+                    .unwrap()
+                    .into_owned()
             ))
             .status()
             .expect("Failed to run assembler");
@@ -844,12 +852,11 @@ impl ElfFile {
         // Unify reginfo sections
         let mut target_reginfo = objfile.find_section_mut(".reginfo");
         if target_reginfo.is_some() {
-            let source_reginfo_data = asm_objfile.find_section(".reginfo").unwrap().data.clone();
-            let mut data = target_reginfo.as_ref().unwrap().data.clone();
+            let source_reginfo_data = &asm_objfile.find_section(".reginfo").unwrap().data;
+            let data = &mut target_reginfo.as_mut().unwrap().data;
             for i in 0..20 {
                 data[i] |= source_reginfo_data[i];
             }
-            target_reginfo.as_mut().unwrap().data = data;
         }
 
         // Move over section contents
@@ -861,27 +868,36 @@ impl ElfFile {
                 continue;
             }
             let source = asm_objfile.find_section(sectype);
-            assert!(source.is_some());
-            let source = source.unwrap();
-            for to_copy_data in to_copy.get_mut(sectype).unwrap() {
+            let Some(source) = source else {
+                panic!("didn't find source section: {}", sectype);
+            };
+            for &ToCopyData {
+                loc,
+                size,
+                ref temp_name,
+                ref fn_desc,
+            } in to_copy.get(sectype).unwrap().iter()
+            {
                 let loc1 = asm_objfile
                     .symtab()
-                    .find_symbol_in_section(
-                        &format!("{}_asm_start", &to_copy_data.temp_name),
-                        source,
-                    )
+                    .find_symbol_in_section(&format!("{}_asm_start", &temp_name), source)
                     .unwrap();
                 let loc2 = asm_objfile
                     .symtab()
-                    .find_symbol_in_section(&format!("{}_asm_end", &to_copy_data.temp_name), source)
+                    .find_symbol_in_section(&format!("{}_asm_end", &temp_name), source)
                     .unwrap();
-                assert_eq!(loc1, to_copy_data.loc);
-                if loc2 - loc1 != to_copy_data.size as u32 {
+                if loc1 != loc {
+                    panic!(
+                        "assembly and C files don't line up for section {}, {}",
+                        sectype, fn_desc
+                    );
+                }
+                if loc2 - loc1 != size {
                     return Err(anyhow::anyhow!(
-                    "incorrectly computed size for section {}, {}. If using .double, make sure to provide explicit alignment padding.",
-                    sectype,
-                    to_copy_data.fn_desc
-                ));
+                        "incorrectly computed size for section {}, {}. If using .double, make sure to provide explicit alignment padding.",
+                        sectype,
+                        fn_desc
+                    ));
                 }
             }
 
@@ -892,20 +908,17 @@ impl ElfFile {
             let mut target = objfile.find_section_mut(sectype);
             assert!(target.is_some());
             let mut data = target.as_ref().unwrap().data.clone();
-            for a in to_copy.get(sectype).unwrap().iter() {
-                let pos = a.loc as usize;
-                let count = a.size;
-
-                data[pos..pos + count].copy_from_slice(&source.data[pos..pos + count]);
+            for &ToCopyData { loc, size, .. } in to_copy.get(sectype).unwrap().iter() {
+                data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
 
                 if sectype == ".text" {
-                    assert_eq!(a.size % 4, 0);
-                    assert_eq!(a.loc % 4, 0);
-                    for j in 0..a.size / 4 {
-                        modified_text_positions.insert(a.loc as usize + 4 * j);
+                    assert_eq!(size % 4, 0);
+                    assert_eq!(loc % 4, 0);
+                    for j in 0..size / 4 {
+                        modified_text_positions.insert(loc + 4 * j);
                     }
                 } else if sectype == ".rodata" {
-                    last_rodata_pos = a.loc as usize + a.size;
+                    last_rodata_pos = loc + size;
                 }
             }
             target.as_mut().unwrap().data = data;
@@ -913,7 +926,7 @@ impl ElfFile {
 
         // Move over late rodata. This is heuristic, sadly, since I can't think
         // of another way of doing it.
-        let mut moved_late_rodata: HashMap<u32, u32> = HashMap::new();
+        let mut moved_late_rodata: HashMap<usize, usize> = HashMap::new();
         if (!all_late_rodata_dummy_bytes.is_empty()
             && all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty()))
             || (!all_jtbl_rodata_size.is_empty() && all_jtbl_rodata_size.iter().any(|&s| s > 0))
@@ -933,7 +946,7 @@ impl ElfFile {
             expected_size *= 4;
             expected_size += all_jtbl_rodata_size.iter().sum::<usize>();
 
-            if source_end - source_pos != expected_size as u32 {
+            if source_end - source_pos != expected_size {
                 return Err(anyhow::anyhow!("computed wrong size of .late_rodata"));
             }
             let mut new_data = target.data.clone();
@@ -972,10 +985,9 @@ impl ElfFile {
                         new_data[pos..pos + 4].copy_from_slice(b"\0\0\0\0");
                         pos += 4;
                     }
-                    new_data[pos..pos + 4].copy_from_slice(
-                        source.data[source_pos as usize..source_pos as usize + 4].as_ref(),
-                    );
-                    moved_late_rodata.insert(source_pos, pos as u32);
+                    new_data[pos..pos + 4]
+                        .copy_from_slice(source.data[source_pos..source_pos + 4].as_ref());
+                    moved_late_rodata.insert(source_pos, pos);
                     last_rodata_pos = pos + 4;
                     source_pos += 4;
                 }
@@ -984,15 +996,14 @@ impl ElfFile {
                     assert!(!dummy_bytes_list.is_empty());
                     let pos = last_rodata_pos;
                     new_data[pos..pos + jtbl_rodata_size].copy_from_slice(
-                        source.data[source_pos as usize..source_pos as usize + jtbl_rodata_size]
-                            .as_ref(),
+                        source.data[source_pos..source_pos + jtbl_rodata_size].as_ref(),
                     );
                     for i in (0..*jtbl_rodata_size).step_by(4) {
-                        moved_late_rodata.insert(source_pos + i as u32, (pos + i) as u32);
+                        moved_late_rodata.insert(source_pos + i, pos + i);
                         jtbl_rodata_positions.insert(pos + i);
                     }
                     last_rodata_pos += jtbl_rodata_size;
-                    source_pos += *jtbl_rodata_size as u32;
+                    source_pos += *jtbl_rodata_size;
                 }
             }
             target.data = new_data;
@@ -1097,8 +1108,8 @@ impl ElfFile {
                 if all_text_glabels.contains(s.borrow().name.as_str()) {
                     s.borrow_mut().set_type(STT_FUNC);
                     if func_sizes.contains_key(s.borrow().name.as_str()) {
-                        let siz: u32 = func_sizes[s.borrow().name.as_str()] as u32;
-                        s.borrow_mut().data.st_size = siz;
+                        let size: u32 = func_sizes[s.borrow().name.as_str()] as u32;
+                        s.borrow_mut().data.st_size = size;
                     }
                 }
                 if section_name == ".late_rodata" {
@@ -1112,8 +1123,8 @@ impl ElfFile {
                             "local symbols in .late_rodata are not allowed"
                         ));
                     }
-                    let st_val = s.borrow().data.st_value;
-                    s.borrow_mut().data.st_value = moved_late_rodata[&st_val];
+                    let st_val = s.borrow().data.st_value as usize;
+                    s.borrow_mut().data.st_value = moved_late_rodata[&st_val] as u32;
                 }
             }
             s.borrow_mut().data.st_name += strtab_adj as u32;
@@ -1136,38 +1147,36 @@ impl ElfFile {
                 .len();
             let mut new_strtab_data = vec![];
 
-            let ifd_max = u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?);
-            let cb_fd_offset = u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?);
-            let cb_sym_offset = u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?);
-            let cb_ss_offset = u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?);
+            let ifd_max =
+                u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?) as usize;
+            let cb_fd_offset =
+                u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?) as usize;
+            let cb_sym_offset =
+                u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?) as usize;
+            let cb_ss_offset =
+                u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?) as usize;
 
             for i in 0..ifd_max {
                 let offset = cb_fd_offset + 18 * 4 * i;
                 let iss_base = u32::from_be_bytes(
-                    objfile.data[(offset + 2 * 4) as usize..(offset + 3 * 4) as usize]
-                        .try_into()?,
-                );
+                    objfile.data[(offset + 2 * 4)..(offset + 3 * 4)].try_into()?,
+                ) as usize;
                 let isym_base = u32::from_be_bytes(
-                    objfile.data[(offset + 4 * 4) as usize..(offset + 5 * 4) as usize]
-                        .try_into()?,
-                );
+                    objfile.data[(offset + 4 * 4)..(offset + 5 * 4)].try_into()?,
+                ) as usize;
                 let csym = u32::from_be_bytes(
-                    objfile.data[(offset + 5 * 4) as usize..(offset + 6 * 4) as usize]
-                        .try_into()?,
-                );
+                    objfile.data[(offset + 5 * 4)..(offset + 6 * 4)].try_into()?,
+                ) as usize;
                 let mut scope_level = 0;
 
                 for j in 0..csym {
                     let offset2 = cb_sym_offset + 12 * (isym_base + j);
-                    let iss = u32::from_be_bytes(
-                        objfile.data[offset2 as usize..(offset2 + 4) as usize].try_into()?,
-                    );
-                    let value = u32::from_be_bytes(
-                        objfile.data[(offset2 + 4) as usize..(offset2 + 8) as usize].try_into()?,
-                    );
-                    let st_sc_index = u32::from_be_bytes(
-                        objfile.data[(offset2 + 8) as usize..(offset2 + 12) as usize].try_into()?,
-                    );
+                    let iss = u32::from_be_bytes(objfile.data[offset2..(offset2 + 4)].try_into()?)
+                        as usize;
+                    let value =
+                        u32::from_be_bytes(objfile.data[(offset2 + 4)..(offset2 + 8)].try_into()?);
+                    let st_sc_index =
+                        u32::from_be_bytes(objfile.data[(offset2 + 8)..(offset2 + 12)].try_into()?);
                     let st = st_sc_index >> 26;
                     let sc = (st_sc_index >> 21) & 0x1F;
 
@@ -1175,12 +1184,12 @@ impl ElfFile {
                         let symbol_name_offset = cb_ss_offset + iss_base + iss;
                         let symbol_name_offset_end = objfile_data
                             .iter()
-                            .skip(symbol_name_offset as usize)
+                            .skip(symbol_name_offset)
                             .position(|x| *x == 0)
                             .unwrap()
-                            + symbol_name_offset as usize;
+                            + symbol_name_offset;
                         let mut symbol_name = String::from_utf8_lossy(
-                            &objfile_data[symbol_name_offset as usize..symbol_name_offset_end],
+                            &objfile_data[symbol_name_offset..symbol_name_offset_end],
                         )
                         .into_owned();
                         if scope_level > 1 {
@@ -1353,10 +1362,8 @@ impl ElfFile {
                     let mut nrels = vec![];
                     for rel in reltab.relocations.iter() {
                         let mut rel = rel.clone();
-                        if sectype == ".text"
-                            && modified_text_positions.contains(&(rel.r_offset as usize))
-                            || sectype == ".rodata"
-                                && jtbl_rodata_positions.contains(&(rel.r_offset as usize))
+                        if sectype == ".text" && modified_text_positions.contains(&rel.r_offset)
+                            || sectype == ".rodata" && jtbl_rodata_positions.contains(&rel.r_offset)
                         {
                             // don't include relocations for late_rodata dummy code
                             continue;
