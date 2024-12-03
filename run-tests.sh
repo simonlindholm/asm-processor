@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+cd "$(dirname "${BASH_SOURCE[0]}")"
 for A in tests/*.c tests/*.p; do
     OBJDUMPFLAGS=-srt
     echo $A
