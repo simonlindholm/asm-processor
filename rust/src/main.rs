@@ -152,6 +152,7 @@ struct AsmProcArgs {
     assembler: Option<String>,
 
     /// path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)
+    #[clap(long)]
     asm_prelude: Option<PathBuf>,
 
     /// input encoding
