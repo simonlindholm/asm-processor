@@ -2,21 +2,62 @@ mod asm;
 mod elf;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fmt::Debug,
     fs::{self, read_to_string, File},
     io::{stdout, Write},
     path::{Path, PathBuf},
     process::Command,
+    str::FromStr,
 };
 
 use anyhow::{Context, Result};
 use asm::GlobalAsmBlock;
 use clap::{Parser, ValueEnum};
 use elf::ElfFile;
-use encoding_rs::Encoding;
 use regex::Regex;
 use temp_dir::TempDir;
+
+#[derive(Clone, Debug)]
+enum Encoding {
+    Latin1,
+    Custom(&'static encoding_rs::Encoding),
+}
+
+impl Encoding {
+    fn encode<'a>(&self, s: &'a str) -> Result<Cow<'a, [u8]>> {
+        match self {
+            Encoding::Latin1 => {
+                if encoding_rs::mem::is_str_latin1(s) {
+                    return Ok(encoding_rs::mem::encode_latin1_lossy(s));
+                }
+            }
+            Encoding::Custom(enc) => {
+                let (ret, _, failed) = enc.encode(s);
+                if !failed {
+                    return Ok(ret);
+                }
+            }
+        }
+        Err(anyhow::anyhow!("Failed to encode string: {}", s))
+    }
+}
+
+impl FromStr for Encoding {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "latin1" {
+            Ok(Encoding::Latin1)
+        } else {
+            match encoding_rs::Encoding::for_label(s.as_bytes()) {
+                Some(enc) => Ok(Encoding::Custom(enc)),
+                None => Err(format!("Unsupported encoding: {}", s)),
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct GlobalState {
@@ -157,11 +198,11 @@ struct AsmProcArgs {
 
     /// input encoding
     #[clap(long, default_value = "latin1", required = false)]
-    input_enc: String,
+    input_enc: Encoding,
 
     /// output encoding
     #[clap(long, default_value = "latin1", required = false)]
-    output_enc: String,
+    output_enc: Encoding,
 
     /// drop mdebug and gptab sections
     #[clap(long)]
@@ -298,7 +339,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
                 asm_functions.push(fun);
                 global_asm = None;
             } else {
-                gasm.process_line(&raw_line, &output_enc)?;
+                gasm.process_line(&raw_line, output_enc)?;
             }
         } else if line == "GLOBAL_ASM(" || line == "#pragma GLOBAL_ASM(" {
             global_asm = Some(GlobalAsmBlock::new(format!(
@@ -334,7 +375,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
 
             let mut gasm = GlobalAsmBlock::new(fname.clone());
             for line2 in prologue {
-                gasm.process_line(line2.trim_end(), &output_enc)?;
+                gasm.process_line(line2.trim_end(), output_enc)?;
             }
 
             if !Path::new(&fname).exists() {
@@ -349,7 +390,7 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
             }
 
             for line2 in read_to_string(&fname)?.lines() {
-                gasm.process_line(line2.trim_end(), &output_enc)?;
+                gasm.process_line(line2.trim_end(), output_enc)?;
             }
 
             let (src, fun) = gasm.finish(&mut state)?;
@@ -405,19 +446,11 @@ fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<
     }
 
     let out_data = if encode {
-        let newline_encoded = match Encoding::for_label(output_enc.as_bytes()) {
-            Some(encoding) => encoding.encode("\n").0,
-            None => return Err(anyhow::anyhow!("Unsupported encoding")),
-        };
+        let newline_encoded = output_enc.encode("\n")?;
 
         let mut data = vec![];
         for line in output_lines {
-            let line_encoded = match Encoding::for_label(output_enc.as_bytes()) {
-                Some(encoding) => encoding.encode(&line).0,
-                None => {
-                    return Err(anyhow::anyhow!("Unsupported encoding"));
-                }
-            };
+            let line_encoded = output_enc.encode(&line)?;
             data.write_all(&line_encoded)?;
             data.write_all(&newline_encoded)?;
         }

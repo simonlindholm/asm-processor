@@ -14,7 +14,7 @@ use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
 use encoding_rs::WINDOWS_1252;
 use temp_dir::TempDir;
 
-use crate::{Function, SymbolVisibility};
+use crate::{Encoding, Function, SymbolVisibility};
 
 const EI_NIDENT: usize = 16;
 const EI_CLASS: u32 = 4;
@@ -672,7 +672,7 @@ impl ElfFile {
         functions: &[Function],
         asm_prelude: &str,
         assembler: &str,
-        output_enc: &str,
+        output_enc: &Encoding,
         drop_mdebug_gptab: bool,
         convert_statics: SymbolVisibility,
     ) -> Result<()> {
@@ -813,13 +813,8 @@ impl ElfFile {
         s_file.write_all(asm_prelude.as_bytes())?;
         s_file.write_all("\n".as_bytes())?;
 
-        let encoding = match encoding_rs::Encoding::for_label(output_enc.as_bytes()) {
-            Some(encoding) => encoding,
-            None => return Err(anyhow::anyhow!("Unsupported encoding: {}", output_enc)),
-        };
-
         for line in asm {
-            let line = encoding.encode(&line).0;
+            let line = output_enc.encode(&line)?;
             s_file.write_all(&line)?;
             s_file.write_all("\n".as_bytes())?;
         }

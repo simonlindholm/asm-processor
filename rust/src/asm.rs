@@ -3,7 +3,7 @@ use std::{collections::HashMap, iter};
 use anyhow::Result;
 use regex::Regex;
 
-use crate::{Function, GlobalState};
+use crate::{Encoding, Function, GlobalState};
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 enum Section {
@@ -74,11 +74,13 @@ impl GlobalAsmBlock {
         }
     }
 
-    fn count_quoted_size(line: &str, z: bool, real_line: &str, output_enc: &str) -> Result<usize> {
-        let line = match encoding_rs::Encoding::for_label(output_enc.as_bytes()) {
-            Some(encoding) => encoding.encode(line).0,
-            None => return Err(anyhow::anyhow!("Unsupported encoding: {}", output_enc)),
-        };
+    fn count_quoted_size(
+        line: &str,
+        z: bool,
+        real_line: &str,
+        output_enc: &Encoding,
+    ) -> Result<usize> {
+        let line = output_enc.encode(line)?;
         let line = encoding_rs::WINDOWS_1252.decode_without_bom_handling(&line);
         let line = line.0.into_owned();
 
@@ -183,7 +185,7 @@ impl GlobalAsmBlock {
         Ok(())
     }
 
-    pub fn process_line(&mut self, line: &str, output_enc: &str) -> Result<()> {
+    pub fn process_line(&mut self, line: &str, output_enc: &Encoding) -> Result<()> {
         self.num_lines += 1;
         if let Some(stripped) = line.strip_suffix("\\") {
             self.glued_line = format!("{}{}", self.glued_line, stripped);
