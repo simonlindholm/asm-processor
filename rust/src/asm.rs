@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter};
+use std::{collections::HashMap, iter, sync::OnceLock};
 
 use anyhow::Result;
 use regex::Regex;
@@ -194,8 +194,13 @@ impl GlobalAsmBlock {
         let mut line = self.glued_line.clone() + line;
         self.glued_line = String::new();
 
-        let re_comment_or_string = Regex::new(r#"#.*|/\*.*?\*/|"(?:\\.|[^\\"])*""#).unwrap();
-        let re_label = Regex::new(r"^[a-zA-Z0-9_]+:\s*").unwrap();
+        static CACHE: OnceLock<(Regex, Regex)> = OnceLock::new();
+        let (re_comment_or_string, re_label) = CACHE.get_or_init(|| {
+            (
+                Regex::new(r#"#.*|/\*.*?\*/|"(?:\\.|[^\\"])*""#).unwrap(),
+                Regex::new(r"^[a-zA-Z0-9_]+:\s*").unwrap(),
+            )
+        });
 
         let real_line = line.clone();
         line = re_comment_or_string
