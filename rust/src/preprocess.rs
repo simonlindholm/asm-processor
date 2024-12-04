@@ -76,37 +76,36 @@ impl GlobalAsmBlock {
         output_enc: &Encoding,
     ) -> Result<usize> {
         let line = output_enc.encode(line)?;
-        let line = encoding_rs::WINDOWS_1252.decode_without_bom_handling(&line);
-        let line = line.0.into_owned();
 
         let mut in_quote = false;
         let mut has_comma = true;
         let mut num_parts = 0;
         let mut ret = 0;
         let mut i = 0;
-        let digits = "0123456789"; // 0-7 would be more sane, but this matches GNU as
+        let digits = b"0123456789"; // 0-7 would be more sane, but this matches GNU as
+        let hexdigits = b"0123456789abcdefABCDEF";
 
-        while i < line.chars().count() {
-            let c = line.chars().nth(i).unwrap();
+        while i < line.len() {
+            let c = line[i];
             i += 1;
             if !in_quote {
-                if c == '"' {
+                if c == b'"' {
                     in_quote = true;
                     if z && !has_comma {
                         return Err(anyhow::anyhow!(".asciiz with glued strings is not supported due to GNU as version diffs\n{}", real_line));
                     }
                     num_parts += 1;
-                } else if c == ',' {
+                } else if c == b',' {
                     has_comma = true;
                 }
             } else {
-                if c == '"' {
+                if c == b'"' {
                     in_quote = false;
                     has_comma = false;
                     continue;
                 }
                 ret += 1;
-                if c != '\\' {
+                if c != b'\\' {
                     continue;
                 }
                 if i == line.len() {
@@ -115,19 +114,18 @@ impl GlobalAsmBlock {
                         real_line
                     ));
                 }
-                let c = line.chars().nth(i).unwrap();
+                let c = line[i];
                 i += 1;
                 // (if c is in "bfnrtv", we have a real escaped literal)
-                if c == 'x' {
+                if c == b'x' {
                     // hex literal, consume any number of hex chars, possibly none
-                    while i < line.len() && digits.contains(line.chars().nth(i).unwrap()) {
+                    while i < line.len() && hexdigits.contains(&line[i]) {
                         i += 1;
                     }
-                } else if digits.contains(c) {
+                } else if digits.contains(&c) {
                     // octal literal, consume up to two more digits
                     let mut it = 0;
-                    while i < line.len() && digits.contains(line.chars().nth(i).unwrap()) && it < 2
-                    {
+                    while i < line.len() && digits.contains(&line[i]) && it < 2 {
                         i += 1;
                         it += 1;
                     }
