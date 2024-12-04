@@ -1,13 +1,12 @@
 use std::{collections::HashMap, fs::read_to_string, io::Write, iter, path::Path, sync::OnceLock};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use enum_map::{enum_map, Enum, EnumMap};
 use regex::Regex;
 
 use crate::{AsmProcArgs, Encoding, Function, GlobalState, OptLevel, RunResult};
 
-use anyhow::Context;
-
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
 enum Section {
     Text,
     Data,
@@ -38,7 +37,7 @@ pub struct GlobalAsmBlock {
     late_rodata_alignment: usize,
     late_rodata_alignment_from_context: bool,
     text_glabels: Vec<String>,
-    fn_section_sizes: HashMap<Section, usize>,
+    fn_section_sizes: EnumMap<Section, usize>,
     fn_ins_inds: Vec<(usize, usize)>,
     glued_line: String,
     num_lines: usize,
@@ -54,13 +53,7 @@ impl GlobalAsmBlock {
             late_rodata_alignment: 0,
             late_rodata_alignment_from_context: false,
             text_glabels: vec![],
-            fn_section_sizes: HashMap::from([
-                (Section::Text, 0),
-                (Section::Data, 0),
-                (Section::Bss, 0),
-                (Section::Rodata, 0),
-                (Section::LateRodata, 0),
-            ]),
+            fn_section_sizes: enum_map! { _ => 0 },
             fn_ins_inds: vec![],
             glued_line: String::new(),
             num_lines: 0,
@@ -155,7 +148,7 @@ impl GlobalAsmBlock {
     }
 
     fn align(&mut self, n: usize) {
-        let size = self.fn_section_sizes.get_mut(&self.cur_section).unwrap();
+        let size = &mut self.fn_section_sizes[self.cur_section];
         while *size % n != 0 {
             *size += 1;
         }
@@ -172,7 +165,7 @@ impl GlobalAsmBlock {
             return Err(anyhow::anyhow!("size cannot be negative {}", line));
         }
 
-        *self.fn_section_sizes.get_mut(&self.cur_section).unwrap() += size as usize;
+        self.fn_section_sizes[self.cur_section] += size as usize;
 
         if self.cur_section == Section::Text {
             if self.text_glabels.is_empty() {
@@ -283,7 +276,7 @@ impl GlobalAsmBlock {
             self.align(4);
 
             if self.cur_section == Section::LateRodata {
-                let align8 = self.fn_section_sizes[&self.cur_section] % 8;
+                let align8 = self.fn_section_sizes[self.cur_section] % 8;
                 // Automatically set late_rodata_alignment, so the generated C code uses doubles.
                 // This gives us correct alignment for the transferred doubles even when the
                 // late_rodata_alignment is wrong, e.g. for non-matching compilation.
@@ -389,14 +382,14 @@ impl GlobalAsmBlock {
         let mut jtbl_rodata_size = 0;
         let mut late_rodata_fn_output = vec![];
 
-        let num_instr = self.fn_section_sizes[&Section::Text] / 4;
+        let num_instr = self.fn_section_sizes[Section::Text] / 4;
 
-        if self.fn_section_sizes[&Section::LateRodata] > 0 {
+        if self.fn_section_sizes[Section::LateRodata] > 0 {
             // Generate late rodata by emitting unique float constants.
             // This requires 3 instructions for each 4 bytes of rodata.
             // If we know alignment, we can use doubles, which give 3
             // instructions for 8 bytes of rodata.
-            let size = self.fn_section_sizes[&Section::LateRodata] / 4;
+            let size = self.fn_section_sizes[Section::LateRodata] / 4;
             let mut skip_next = false;
             let mut needs_double = self.late_rodata_alignment != 0;
             let mut extra_mips1_nop = false;
@@ -490,12 +483,12 @@ impl GlobalAsmBlock {
         }
 
         let mut text_name = None;
-        if self.fn_section_sizes[&Section::Text] > 0 || !late_rodata_fn_output.is_empty() {
+        if self.fn_section_sizes[Section::Text] > 0 || !late_rodata_fn_output.is_empty() {
             let new_name = state.make_name("func");
             src[0] = state.func_prologue(&new_name);
             text_name = Some(new_name);
             src[self.num_lines] = state.func_epilogue();
-            let instr_count = self.fn_section_sizes[&Section::Text] / 4;
+            let instr_count = self.fn_section_sizes[Section::Text] / 4;
             if instr_count < state.min_instr_count {
                 return Err(anyhow::anyhow!(format!("too short .text block",)));
             }
@@ -569,7 +562,7 @@ impl GlobalAsmBlock {
         }
 
         let mut rodata_name = None;
-        if self.fn_section_sizes[&Section::Rodata] > 0 {
+        if self.fn_section_sizes[Section::Rodata] > 0 {
             if state.pascal {
                 return Err(anyhow::anyhow!(format!(
                     ".rodata isn't supported with Pascal for now"
@@ -579,26 +572,26 @@ impl GlobalAsmBlock {
             src[self.num_lines] += format!(
                 " const char {}[{}] = {{1}};",
                 new_name,
-                self.fn_section_sizes[&Section::Rodata]
+                self.fn_section_sizes[Section::Rodata]
             )
             .as_str();
             rodata_name = Some(new_name);
         }
 
         let mut data_name = None;
-        if self.fn_section_sizes[&Section::Data] > 0 {
+        if self.fn_section_sizes[Section::Data] > 0 {
             let new_name = state.make_name("data");
             let line = if state.pascal {
                 format!(
                     " var {}: packed array[1..{}] of char := [otherwise: 0];",
                     new_name,
-                    self.fn_section_sizes[&Section::Data]
+                    self.fn_section_sizes[Section::Data]
                 )
             } else {
                 format!(
                     " char {}[{}] = {{1}};",
                     new_name,
-                    self.fn_section_sizes[&Section::Data]
+                    self.fn_section_sizes[Section::Data]
                 )
             };
             src[self.num_lines] += line.as_str();
@@ -606,7 +599,7 @@ impl GlobalAsmBlock {
         }
 
         let mut bss_name = None;
-        if self.fn_section_sizes[&Section::Bss] > 0 {
+        if self.fn_section_sizes[Section::Bss] > 0 {
             let new_name = state.make_name("bss");
             if state.pascal {
                 return Err(anyhow::anyhow!(format!(
@@ -616,7 +609,7 @@ impl GlobalAsmBlock {
             src[self.num_lines] += format!(
                 " char {}[{}];",
                 new_name,
-                self.fn_section_sizes[&Section::Bss]
+                self.fn_section_sizes[Section::Bss]
             )
             .as_str();
             bss_name = Some(new_name);
@@ -632,19 +625,19 @@ impl GlobalAsmBlock {
             data: HashMap::from([
                 (
                     ".text".to_string(),
-                    (text_name, self.fn_section_sizes[&Section::Text]),
+                    (text_name, self.fn_section_sizes[Section::Text]),
                 ),
                 (
                     ".data".to_string(),
-                    (data_name, self.fn_section_sizes[&Section::Data]),
+                    (data_name, self.fn_section_sizes[Section::Data]),
                 ),
                 (
                     ".rodata".to_string(),
-                    (rodata_name, self.fn_section_sizes[&Section::Rodata]),
+                    (rodata_name, self.fn_section_sizes[Section::Rodata]),
                 ),
                 (
                     ".bss".to_string(),
-                    (bss_name, self.fn_section_sizes[&Section::Bss]),
+                    (bss_name, self.fn_section_sizes[Section::Bss]),
                 ),
             ]),
         };
