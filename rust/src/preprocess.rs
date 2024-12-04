@@ -717,7 +717,7 @@ pub(crate) fn parse_source(
     let output_enc = &args.output_enc;
     let mut global_asm: Option<(GlobalAsmBlock, usize)> = None;
     let mut asm_functions: Vec<Function> = vec![];
-    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\" ", infile_path.display())];
+    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\"", infile_path.display())];
     let mut deps: Vec<String> = vec![];
 
     let mut is_cutscene_data = false;
@@ -823,8 +823,8 @@ pub(crate) fn parse_source(
             let mut res = parse_source(&fname, args, false)?;
             deps.append(&mut res.deps);
             let res_str = format!(
-                "{}#line {} '{}'",
-                String::from_utf8(res.output.clone())?,
+                "{}#line {} \"{}\"",
+                String::from_utf8(res.output).expect("nested calls generate utf-8"),
                 line_no + 1,
                 infile_path.file_name().unwrap().to_str().unwrap()
             );
