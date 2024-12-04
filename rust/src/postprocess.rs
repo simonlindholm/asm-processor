@@ -93,12 +93,12 @@ impl ElfHeader {
         Ok(header)
     }
 
-    fn to_bin(&self, endian: Endian) -> BinResult<[u8; Self::SIZE]> {
+    fn to_bin(&self, endian: Endian) -> [u8; Self::SIZE] {
         let mut rv = [0; Self::SIZE];
         let mut cursor = Cursor::new(rv.as_mut_slice());
 
-        self.write_options(&mut cursor, endian, ())?;
-        Ok(rv)
+        self.write_options(&mut cursor, endian, ()).unwrap();
+        rv
     }
 }
 
@@ -203,15 +203,15 @@ impl Relocation {
         })
     }
 
-    fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
+    fn to_bin(&self, endian: Endian) -> Vec<u8> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
         let r_offset = self.r_offset as u32;
         let r_info = ((self.sym_index as u32) << 8) | self.rel_type;
-        r_offset.write_options(&mut cursor, endian, ())?;
-        r_info.write_options(&mut cursor, endian, ())?;
-        self.r_addend.write_options(&mut cursor, endian, ())?;
-        Ok(rv)
+        r_offset.write_options(&mut cursor, endian, ()).unwrap();
+        r_info.write_options(&mut cursor, endian, ()).unwrap();
+        self.r_addend.write_options(&mut cursor, endian, ()).unwrap();
+        rv
     }
 }
 
@@ -358,7 +358,7 @@ impl Section {
         self.header.sh_type == SHT_REL || self.header.sh_type == SHT_RELA
     }
 
-    fn header_to_bin(&mut self, endian: Endian) -> BinResult<[u8; SectionHeader::SIZE]> {
+    fn header_to_bin(&mut self, endian: Endian) -> [u8; SectionHeader::SIZE] {
         if self.header.sh_type != SHT_NOBITS {
             self.header.sh_size = self.data.len() as u32;
         }
@@ -366,9 +366,9 @@ impl Section {
         let mut rv = [0; SectionHeader::SIZE];
         let mut cursor = Cursor::new(rv.as_mut_slice());
 
-        self.header.write_options(&mut cursor, endian, ())?;
+        self.header.write_options(&mut cursor, endian, ()).unwrap();
 
-        Ok(rv)
+        rv
     }
 
     fn late_init(&mut self, sections: &mut [Section], endian: Endian) {
@@ -636,7 +636,7 @@ impl ElfFile {
     fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
         self.header.e_shnum = self.sections.len() as u16;
         writer
-            .write_all(&self.header.to_bin(self.endian).unwrap())
+            .write_all(&self.header.to_bin(self.endian))
             .unwrap();
 
         for s in &mut self.sections {
@@ -657,13 +657,13 @@ impl ElfFile {
 
         for s in &mut self.sections {
             writer
-                .write_all(&s.header_to_bin(self.endian).unwrap())
+                .write_all(&s.header_to_bin(self.endian))
                 .unwrap();
         }
 
         writer.seek(SeekFrom::Start(0)).unwrap();
         writer
-            .write_all(&self.header.to_bin(self.endian).unwrap())
+            .write_all(&self.header.to_bin(self.endian))
             .unwrap();
         writer.flush().unwrap();
         Ok(())
@@ -1346,7 +1346,7 @@ pub(crate) fn fixup_objfile(
                 }
                 reltab.data = nrels
                     .iter()
-                    .flat_map(|x| x.to_bin(endian).unwrap())
+                    .flat_map(|x| x.to_bin(endian))
                     .collect();
                 reltab.relocations = nrels;
             }
@@ -1379,7 +1379,7 @@ pub(crate) fn fixup_objfile(
                 let new_data: Vec<u8> = reltab
                     .relocations
                     .iter()
-                    .flat_map(|x| x.to_bin(endian).unwrap())
+                    .flat_map(|x| x.to_bin(endian))
                     .collect();
 
                 let (prefix, sh_entsize) = if reltab.header.sh_type == SHT_REL {
