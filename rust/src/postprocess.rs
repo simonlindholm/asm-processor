@@ -373,18 +373,6 @@ impl Section {
         rv
     }
 
-    fn late_init(&mut self, sections: &mut [Section], endian: Endian) {
-        if self.header.sh_type == SHT_SYMTAB {
-            self.init_symbols(sections, endian);
-        } else if self.is_rel() {
-            let s: &mut Section = sections.get_mut(self.header.sh_info as usize).unwrap();
-
-            self.rel_target = Some(s.index);
-            s.relocated_by.push(self.index);
-            self.init_relocs(endian);
-        }
-    }
-
     fn find_symbol(&self, name: &str) -> Option<(usize, usize)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
@@ -547,7 +535,6 @@ impl ElfFile {
 
         for s in sections.iter_mut() {
             s.name = Some(shstr.lookup_str(s.header.sh_name as usize));
-            // s.late_init(&mut sections, endian); TODO BLAH
 
             if s.header.sh_type == SHT_SYMTAB {
                 s.init_symbols(&sections_before, endian);
@@ -560,8 +547,7 @@ impl ElfFile {
         }
 
         for (target, reloc) in relocated_bys {
-            let s = sections.get_mut(target).unwrap();
-            s.relocated_by.push(reloc);
+            sections[target].relocated_by.push(reloc);
         }
 
         Ok(ElfFile {
@@ -593,13 +579,7 @@ impl ElfFile {
         self.sections.get_mut(self.symtab).unwrap()
     }
 
-    fn add_section(
-        &mut self,
-        name: &str,
-        fields: &HeaderFields,
-        data: &[u8],
-        endian: Endian,
-    ) -> &Section {
+    fn add_section(&mut self, name: &str, fields: &HeaderFields, data: &[u8], endian: Endian) {
         let shstr = self
             .sections
             .get_mut(self.header.e_shstrndx as usize)
@@ -607,10 +587,7 @@ impl ElfFile {
         let sh_name = shstr.add_str(name);
         let mut s = Section::from_parts(sh_name, fields, data, self.sections.len(), endian);
         s.name = Some(name.to_string());
-        s.late_init(&mut self.sections, endian);
         self.sections.push(s);
-
-        self.sections.last().unwrap()
     }
 
     fn drop_mdebug_gptab(&mut self) {

@@ -245,14 +245,6 @@ class Section:
             self.sh_size = len(self.data)
         return self.fmt.pack('IIIIIIIIII', self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize)
 
-    def late_init(self, sections):
-        if self.sh_type == SHT_SYMTAB:
-            self.init_symbols(sections)
-        elif self.is_rel():
-            self.rel_target = sections[self.sh_info]
-            self.rel_target.relocated_by.append(self)
-            self.init_relocs()
-
     def find_symbol(self, name):
         assert self.sh_type == SHT_SYMTAB
         for s in self.symbol_entries:
@@ -356,7 +348,12 @@ class ElfFile:
         shstr = self.sections[self.elf_header.e_shstrndx]
         for s in self.sections:
             s.name = shstr.lookup_str(s.sh_name)
-            s.late_init(self.sections)
+            if s.sh_type == SHT_SYMTAB:
+                s.init_symbols(self.sections)
+            elif s.is_rel():
+                self.sections[s.sh_info].relocated_by.append(s)
+                s.init_relocs()
+
 
     def find_section(self, name):
         for s in self.sections:
@@ -373,7 +370,6 @@ class ElfFile:
                 index=len(self.sections))
         self.sections.append(s)
         s.name = name
-        s.late_init(self.sections)
         return s
 
     def drop_mdebug_gptab(self):
