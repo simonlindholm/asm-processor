@@ -12,7 +12,7 @@ import asm_processor
 keep_preprocessed_files = False
 
 dir_path = Path(__file__).resolve().parent
-asm_prelude_path = dir_path / "prelude.inc"
+asm_prelude_path = dir_path / ".." / "prelude.inc"
 
 all_args = sys.argv[1:]
 sep0 = next(index for index, arg in enumerate(all_args) if not arg.startswith("-"))
