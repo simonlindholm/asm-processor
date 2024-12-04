@@ -1,11 +1,11 @@
-mod asm;
-mod elf;
+mod postprocess;
+mod preprocess;
 
 use std::{
     borrow::Cow,
     collections::HashMap,
     fmt::Debug,
-    fs::{self, read_to_string, File},
+    fs::{self, File},
     io::{stdout, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -13,10 +13,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use asm::GlobalAsmBlock;
 use clap::{Parser, ValueEnum};
-use elf::fixup_objfile;
-use regex::Regex;
+use postprocess::fixup_objfile;
+use preprocess::parse_source;
 use temp_dir::TempDir;
 
 #[derive(Clone, Debug)]
@@ -248,222 +247,6 @@ struct Function {
     late_rodata_asm_conts: Vec<String>,
     fn_desc: String,
     data: HashMap<String, (Option<String>, usize)>,
-}
-
-/// Convert a float string to its hexadecimal representation
-fn repl_float_hex(cap: &regex::Captures) -> String {
-    let float_str = cap[0].trim().trim_end_matches('f');
-    let float_val = float_str.parse::<f32>().unwrap();
-    let hex_val = f32::to_be_bytes(float_val);
-    format!("{}", u32::from_be_bytes(hex_val))
-}
-
-fn parse_source(infile_path: &Path, args: &AsmProcArgs, encode: bool) -> Result<RunResult> {
-    let (mut min_instr_count, mut skip_instr_count) = match (args.opt.clone(), args.g3) {
-        (OptLevel::O0, false) => match args.framepointer {
-            true => (8, 8),
-            false => (4, 4),
-        },
-        (OptLevel::O1, false) | (OptLevel::O2, false) => match args.framepointer {
-            true => (6, 5),
-            false => (2, 1),
-        },
-        (OptLevel::G, false) => match args.framepointer {
-            true => (7, 7),
-            false => (4, 4),
-        },
-        (OptLevel::O2, true) => match args.framepointer {
-            true => (4, 4),
-            false => (2, 2),
-        },
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported optimization level: -g3 can only be used with -O2"
-            ))
-            .context("Invalid arguments")
-        }
-    };
-
-    let mut prelude_if_late_rodata = 0;
-    if args.kpic {
-        // Without optimizations, the PIC prelude always takes up 3 instructions.
-        // With optimizations, the prelude is optimized out if there's no late rodata.
-        if args.opt == OptLevel::O2 || args.g3 {
-            prelude_if_late_rodata = 3;
-        } else {
-            min_instr_count += 3;
-            skip_instr_count += 3;
-        }
-    }
-
-    let use_jtbl_for_rodata =
-        (args.opt == OptLevel::O2 || args.g3) && !args.framepointer && !args.kpic;
-
-    let mut state = GlobalState::new(
-        min_instr_count,
-        skip_instr_count,
-        use_jtbl_for_rodata,
-        prelude_if_late_rodata,
-        args.mips1,
-        args.pascal,
-    );
-    let output_enc = &args.output_enc;
-    let mut global_asm: Option<(GlobalAsmBlock, usize)> = None;
-    let mut asm_functions: Vec<Function> = vec![];
-    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\" ", infile_path.display())];
-    let mut deps: Vec<String> = vec![];
-
-    let mut is_cutscene_data = false;
-    let mut is_early_include = false;
-
-    let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
-    let float_re = Regex::new(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")?;
-
-    for (line_no, line) in read_to_string(infile_path)?.lines().enumerate() {
-        let line_no = line_no + 1;
-        let mut raw_line = line.trim().to_owned();
-        let line = raw_line.trim_start();
-
-        // Print exactly one output line per source line, to make compiler
-        // errors have correct line numbers. These will be overridden with
-        // reasonable content further down.
-        output_lines.push("".to_owned());
-
-        if let Some((ref mut gasm, start_index)) = global_asm {
-            if line.starts_with(')') {
-                let (src, fun) = gasm.finish(&mut state)?;
-                for (i, line2) in src.iter().enumerate() {
-                    output_lines[start_index + i] = line2.clone();
-                }
-                asm_functions.push(fun);
-                global_asm = None;
-            } else {
-                gasm.process_line(&raw_line, output_enc)?;
-            }
-        } else if line == "GLOBAL_ASM(" || line == "#pragma GLOBAL_ASM(" {
-            global_asm = Some((
-                GlobalAsmBlock::new(format!("GLOBAL_ASM block at line {}", &line_no.to_string())),
-                output_lines.len(),
-            ));
-        } else if ((line.starts_with("GLOBAL_ASM(\"") || line.starts_with("#pragma GLOBAL_ASM(\""))
-            && line.ends_with("\")"))
-            || ((line.starts_with("INCLUDE_ASM(\"") || line.starts_with("INCLUDE_RODATA(\""))
-                && line.contains("\",")
-                && line.ends_with(");"))
-        {
-            let (prologue, fname) = if line.starts_with("INCLUDE_") {
-                // INCLUDE_ASM("path/to", functionname);
-                let (before, after) = line.split_once("\",").unwrap();
-                let fname = format!(
-                    "{}/{}.s",
-                    before[before.find('(').unwrap() + 2..].to_owned(),
-                    after.trim()[..after.len() - 3].trim()
-                );
-
-                if line.starts_with("INCLUDE_RODATA") {
-                    (vec![".section .rodata".to_string()], fname)
-                } else {
-                    (vec![], fname)
-                }
-            } else {
-                // GLOBAL_ASM("path/to/file.s")
-                let fname = line[line.find('(').unwrap() + 2..line.len() - 2].to_string();
-                (vec![], fname)
-            };
-
-            let mut gasm = GlobalAsmBlock::new(fname.clone());
-            for line2 in prologue {
-                gasm.process_line(line2.trim_end(), output_enc)?;
-            }
-
-            if !Path::new(&fname).exists() {
-                // The GLOBAL_ASM block might be surrounded by an ifdef, so it's
-                // not clear whether a missing file actually represents a compile
-                // error. Pass the responsibility for determining that on to the
-                // compiler by emitting a bad include directive. (IDO treats
-                // #error as a warning for some reason.)
-                let output_lines_len = output_lines.len();
-                output_lines[output_lines_len - 1] = format!("#include \"GLOBAL_ASM:{}\"", fname);
-                continue;
-            }
-
-            for line2 in read_to_string(&fname)?.lines() {
-                gasm.process_line(line2.trim_end(), output_enc)?;
-            }
-
-            let (src, fun) = gasm.finish(&mut state)?;
-            let output_lines_len = output_lines.len();
-            output_lines[output_lines_len - 1] = src.join("");
-            asm_functions.push(fun);
-            deps.push(fname);
-        } else if line == "#pragma asmproc recurse" {
-            // C includes qualified as
-            // #pragma asmproc recurse
-            // #include "file.c"
-            // will be processed recursively when encountered
-            is_early_include = true;
-        } else if is_early_include {
-            // Previous line was a #pragma asmproc recurse
-            is_early_include = false;
-            if !line.starts_with("#include ") {
-                return Err(anyhow::anyhow!(
-                    "#pragma asmproc recurse must be followed by an #include "
-                ));
-            }
-            let fpath = infile_path.parent().unwrap();
-            let fname = fpath.join(line[line.find(' ').unwrap() + 2..].trim());
-            deps.push(fname.to_str().unwrap().to_string());
-            let mut res = parse_source(&fname, args, false)?;
-            deps.append(&mut res.deps);
-            let res_str = format!(
-                "{}#line {} '{}'",
-                String::from_utf8(res.output.clone())?,
-                line_no + 1,
-                infile_path.file_name().unwrap().to_str().unwrap()
-            );
-
-            let output_lines_len = output_lines.len();
-            output_lines[output_lines_len - 1] = res_str;
-        } else {
-            if args.encode_cutscene_data_float_encoding {
-                // This is a hack to replace all floating-point numbers in an array of a particular type
-                // (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
-                if cutscene_re.is_match(line) {
-                    is_cutscene_data = true;
-                } else if line.ends_with("};") {
-                    is_cutscene_data = false;
-                }
-
-                if is_cutscene_data {
-                    raw_line = float_re.replace_all(&raw_line, repl_float_hex).into_owned();
-                }
-            }
-            let output_lines_len = output_lines.len();
-            output_lines[output_lines_len - 1] = raw_line.to_owned();
-        }
-    }
-
-    let out_data = if encode {
-        let newline_encoded = output_enc.encode("\n")?;
-
-        let mut data = vec![];
-        for line in output_lines {
-            let line_encoded = output_enc.encode(&line)?;
-            data.write_all(&line_encoded)?;
-            data.write_all(&newline_encoded)?;
-        }
-        data
-    } else {
-        let str = format!("{}\n", output_lines.join("\n"));
-
-        str.as_bytes().to_vec()
-    };
-
-    Ok(RunResult {
-        functions: asm_functions,
-        deps,
-        output: out_data,
-    })
 }
 
 #[derive(Default)]
