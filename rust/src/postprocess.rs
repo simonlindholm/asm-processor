@@ -405,47 +405,30 @@ impl Section {
         self.relocations = entries;
     }
 
-    fn relocate_mdebug(&mut self, original_offset: usize, endian: Endian) -> BinResult<()> {
+    fn relocate_mdebug(&mut self, original_offset: u32, endian: Endian) -> BinResult<()> {
         assert_eq!(self.header.sh_type, SHT_MIPS_DEBUG);
-        let shift_by = self.header.sh_offset as usize - original_offset;
+        let shift_by = self.header.sh_offset.wrapping_sub(original_offset);
 
         let mut hdrr = Hdrr::read_options(&mut Cursor::new(&self.data), endian, ()).unwrap();
 
         assert_eq!(hdrr.magic, 0x7009);
 
-        if hdrr.cb_line != 0 {
-            hdrr.cb_line_offset += shift_by as u32;
-        }
-        if hdrr.idn_max != 0 {
-            hdrr.cb_dn_offset += shift_by as u32;
-        }
-        if hdrr.ipd_max != 0 {
-            hdrr.cb_pd_offset += shift_by as u32;
-        }
-        if hdrr.isym_max != 0 {
-            hdrr.cb_sym_offset += shift_by as u32;
-        }
-        if hdrr.iopt_max != 0 {
-            hdrr.cb_opt_offset += shift_by as u32;
-        }
-        if hdrr.iaux_max != 0 {
-            hdrr.cb_aux_offset += shift_by as u32;
-        }
-        if hdrr.iss_max != 0 {
-            hdrr.cb_ss_offset += shift_by as u32;
-        }
-        if hdrr.iss_ext_max != 0 {
-            hdrr.cb_ss_ext_offset += shift_by as u32;
-        }
-        if hdrr.ifd_max != 0 {
-            hdrr.cb_fd_offset += shift_by as u32;
-        }
-        if hdrr.crfd != 0 {
-            hdrr.cb_rfd_offset += shift_by as u32;
-        }
-        if hdrr.iext_max != 0 {
-            hdrr.cb_ext_offset += shift_by as u32;
-        }
+        let relocate = |a, b: &mut u32| {
+            if a != 0 {
+                *b = b.wrapping_add(shift_by);
+            }
+        };
+        relocate(hdrr.cb_line, &mut hdrr.cb_line_offset);
+        relocate(hdrr.idn_max, &mut hdrr.cb_dn_offset);
+        relocate(hdrr.ipd_max, &mut hdrr.cb_pd_offset);
+        relocate(hdrr.isym_max, &mut hdrr.cb_sym_offset);
+        relocate(hdrr.iopt_max, &mut hdrr.cb_opt_offset);
+        relocate(hdrr.iaux_max, &mut hdrr.cb_aux_offset);
+        relocate(hdrr.iss_max, &mut hdrr.cb_ss_offset);
+        relocate(hdrr.iss_ext_max, &mut hdrr.cb_ss_ext_offset);
+        relocate(hdrr.ifd_max, &mut hdrr.cb_fd_offset);
+        relocate(hdrr.crfd, &mut hdrr.cb_rfd_offset);
+        relocate(hdrr.iext_max, &mut hdrr.cb_ext_offset);
 
         let mut new_data = [0; Hdrr::SIZE];
         let mut cursor = Cursor::new(new_data.as_mut_slice());
@@ -607,7 +590,7 @@ impl ElfFile {
                 s.header.sh_offset = writer.stream_position().unwrap() as u32;
                 if s.header.sh_type == SHT_MIPS_DEBUG && s.header.sh_offset != old_offset {
                     // The .mdebug section has moved, relocate offsets
-                    s.relocate_mdebug(old_offset as usize, self.endian)?;
+                    s.relocate_mdebug(old_offset, self.endian)?;
                 }
                 writer.write_all(&s.data).unwrap();
             }
