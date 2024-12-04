@@ -633,7 +633,7 @@ impl GlobalAsmBlock {
                         if let Some(entry) = rodata_stack.pop() {
                             src[line] += &entry;
                         } else if state.pascal {
-                            src[line] += state.pascal_assignment_int("i", 0).as_str();
+                            src[line] += &state.pascal_assignment_int("i", 0);
                         } else {
                             src[line] += "*(volatile int*)0 = 0;";
                         }
@@ -661,12 +661,11 @@ impl GlobalAsmBlock {
                 return self.fail_without_line(".rodata isn't supported with Pascal for now");
             }
             let new_name = state.make_name("rodata");
-            src[self.num_lines] += format!(
+            src[self.num_lines] += &format!(
                 " const char {}[{}] = {{1}};",
                 new_name,
                 self.fn_section_sizes[InputSection::Rodata]
-            )
-            .as_str();
+            );
             rodata_name = Some(new_name);
         }
 
@@ -686,7 +685,7 @@ impl GlobalAsmBlock {
                     self.fn_section_sizes[InputSection::Data]
                 )
             };
-            src[self.num_lines] += line.as_str();
+            src[self.num_lines] += &line;
             data_name = Some(new_name);
         }
 
@@ -696,12 +695,11 @@ impl GlobalAsmBlock {
             if state.pascal {
                 return self.fail_without_line(".bss isn't supported with Pascal for now");
             }
-            src[self.num_lines] += format!(
+            src[self.num_lines] += &format!(
                 " char {}[{}];",
                 new_name,
                 self.fn_section_sizes[InputSection::Bss]
-            )
-            .as_str();
+            );
             bss_name = Some(new_name);
         }
 

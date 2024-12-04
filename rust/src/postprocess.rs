@@ -941,11 +941,11 @@ pub(crate) fn fixup_objfile(
         let target = objfile.find_section_mut(".rodata").unwrap();
         let mut source_pos = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_start.unwrap().as_str(), source)
+            .find_symbol_in_section(&late_rodata_source_name_start.unwrap(), source)
             .unwrap();
         let source_end = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_end.unwrap().as_str(), source)
+            .find_symbol_in_section(&late_rodata_source_name_end.unwrap(), source)
             .unwrap();
         let mut expected_size: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
         expected_size *= 4;
@@ -1086,10 +1086,10 @@ pub(crate) fn fixup_objfile(
             }
             s.borrow_mut().st_shndx = objfile_section.unwrap().index;
             // glabels aren't marked as functions, making objdump output confusing. Fix that.
-            if all_text_glabels.contains(s.borrow().name.as_str()) {
+            if all_text_glabels.contains(&s.borrow().name) {
                 s.borrow_mut().st_type = STT_FUNC;
-                if func_sizes.contains_key(s.borrow().name.as_str()) {
-                    let size = func_sizes[s.borrow().name.as_str()];
+                if func_sizes.contains_key(&s.borrow().name) {
+                    let size = func_sizes[&s.borrow().name];
                     s.borrow_mut().st_size = size;
                 }
             }
@@ -1167,7 +1167,7 @@ pub(crate) fn fixup_objfile(
                     if scope_level > 1 {
                         // For in-function statics, append an increasing counter to
                         // the name, to avoid duplicate conflicting symbols.
-                        let count = static_name_count.get(symbol_name.as_str()).unwrap_or(&0) + 1;
+                        let count = static_name_count.get(&symbol_name).unwrap_or(&0) + 1;
                         static_name_count.insert(symbol_name.clone(), count);
                         symbol_name = format!("{}:{}", symbol_name, count);
                     }
@@ -1384,12 +1384,12 @@ pub(crate) fn fixup_objfile(
 
                 if reltab.header.sh_type == SHT_REL {
                     if let Some(target_reltab) =
-                        objfile.find_section_mut(format!(".rel{}", target_sectype).as_str())
+                        objfile.find_section_mut(&format!(".rel{}", target_sectype))
                     {
                         target_reltab.data.extend(new_data);
                     } else {
                         objfile.add_section(
-                            format!(".rel{}", target_sectype).as_str(),
+                            &format!(".rel{}", target_sectype),
                             &HeaderFields {
                                 sh_type: SHT_REL,
                                 sh_flags: 0,
@@ -1403,12 +1403,12 @@ pub(crate) fn fixup_objfile(
                         );
                     }
                 } else if let Some(target_reltaba) =
-                    objfile.find_section_mut(format!(".rela{}", target_sectype).as_str())
+                    objfile.find_section_mut(&format!(".rela{}", target_sectype))
                 {
                     target_reltaba.data.extend(new_data);
                 } else {
                     objfile.add_section(
-                        format!(".rela{}", target_sectype).as_str(),
+                        &format!(".rela{}", target_sectype),
                         &HeaderFields {
                             sh_type: SHT_REL,
                             sh_flags: 0,
