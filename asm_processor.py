@@ -177,18 +177,18 @@ class Relocation:
         self.fmt = fmt
         self.sh_type = sh_type
         if sh_type == SHT_REL:
-            self.r_offset, self.r_info = fmt.unpack('II', data)
+            self.r_offset, r_info = fmt.unpack('II', data)
         else:
-            self.r_offset, self.r_info, self.r_addend = fmt.unpack('III', data)
-        self.sym_index = self.r_info >> 8
-        self.rel_type = self.r_info & 0xff
+            self.r_offset, r_info, self.r_addend = fmt.unpack('III', data)
+        self.sym_index = r_info >> 8
+        self.rel_type = r_info & 0xff
 
     def to_bin(self):
-        self.r_info = (self.sym_index << 8) | self.rel_type
+        r_info = (self.sym_index << 8) | self.rel_type
         if self.sh_type == SHT_REL:
-            return self.fmt.pack('II', self.r_offset, self.r_info)
+            return self.fmt.pack('II', self.r_offset, r_info)
         else:
-            return self.fmt.pack('III', self.r_offset, self.r_info, self.r_addend)
+            return self.fmt.pack('III', self.r_offset, r_info, self.r_addend)
 
 
 class Section:
@@ -1256,13 +1256,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Find relocated symbols
         relocated_symbols = set()
         for sectype in SECTIONS + ['.late_rodata']:
-            for obj in [asm_objfile, objfile]:
-                sec = obj.find_section(sectype)
-                if sec is None:
-                    continue
-                for reltab in sec.relocated_by:
-                    for rel in reltab.relocations:
-                        relocated_symbols.add(obj.symtab.symbol_entries[rel.sym_index])
+            sec = asm_objfile.find_section(sectype)
+            if sec is None:
+                continue
+            for reltab in sec.relocated_by:
+                for rel in reltab.relocations:
+                    relocated_symbols.add(asm_objfile.symtab.symbol_entries[rel.sym_index])
 
         # Move over symbols, deleting the temporary function labels.
         # Skip over new local symbols that aren't relocated against, to
