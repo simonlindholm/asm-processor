@@ -210,7 +210,9 @@ impl Relocation {
         let r_info = ((self.sym_index as u32) << 8) | self.rel_type;
         r_offset.write_options(&mut cursor, endian, ()).unwrap();
         r_info.write_options(&mut cursor, endian, ()).unwrap();
-        self.r_addend.write_options(&mut cursor, endian, ()).unwrap();
+        self.r_addend
+            .write_options(&mut cursor, endian, ())
+            .unwrap();
         rv
     }
 }
@@ -315,7 +317,7 @@ impl Section {
         data: &[u8],
         index: usize,
         endian: Endian,
-    ) -> BinResult<Self> {
+    ) -> Self {
         let header = SectionHeader {
             sh_name,
             sh_type: fields.sh_type,
@@ -332,9 +334,9 @@ impl Section {
         let mut rv = [0; SectionHeader::SIZE];
         let mut cursor = Cursor::new(rv.as_mut_slice());
 
-        header.write_options(&mut cursor, endian, ())?;
+        header.write_options(&mut cursor, endian, ()).unwrap();
 
-        Self::new(&rv, data, index, endian)
+        Self::new(&rv, data, index, endian).unwrap()
     }
 
     fn lookup_str(&self, index: usize) -> String {
@@ -603,8 +605,7 @@ impl ElfFile {
             .get_mut(self.header.e_shstrndx as usize)
             .unwrap();
         let sh_name = shstr.add_str(name);
-        let mut s =
-            Section::from_parts(sh_name, fields, data, self.sections.len(), endian).unwrap();
+        let mut s = Section::from_parts(sh_name, fields, data, self.sections.len(), endian);
         s.name = Some(name.to_string());
         s.late_init(&mut self.sections, endian);
         self.sections.push(s);
@@ -635,9 +636,7 @@ impl ElfFile {
 
     fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
         self.header.e_shnum = self.sections.len() as u16;
-        writer
-            .write_all(&self.header.to_bin(self.endian))
-            .unwrap();
+        writer.write_all(&self.header.to_bin(self.endian)).unwrap();
 
         for s in &mut self.sections {
             if s.header.sh_type != SHT_NOBITS && s.header.sh_type != SHT_NULL {
@@ -656,15 +655,11 @@ impl ElfFile {
         self.header.e_shoff = writer.stream_position().unwrap() as u32;
 
         for s in &mut self.sections {
-            writer
-                .write_all(&s.header_to_bin(self.endian))
-                .unwrap();
+            writer.write_all(&s.header_to_bin(self.endian)).unwrap();
         }
 
         writer.seek(SeekFrom::Start(0)).unwrap();
-        writer
-            .write_all(&self.header.to_bin(self.endian))
-            .unwrap();
+        writer.write_all(&self.header.to_bin(self.endian)).unwrap();
         writer.flush().unwrap();
         Ok(())
     }
@@ -706,8 +701,8 @@ pub(crate) fn fixup_objfile(
     let mut all_late_rodata_dummy_bytes: Vec<Vec<[u8; 4]>> = vec![];
     let mut all_jtbl_rodata_size: Vec<usize> = vec![];
     let mut late_rodata_asm: Vec<String> = vec![];
-    let mut late_rodata_source_name_start: Option<String> = None;
-    let mut late_rodata_source_name_end: Option<String> = None;
+    let late_rodata_source_name_start = "_asmpp_late_rodata_start";
+    let late_rodata_source_name_end = "_asmpp_late_rodata_end";
 
     // Generate an assembly file with all the assembly we need to fill in. For
     // simplicity we pad with nops/.space so that addresses match exactly, so we
@@ -789,21 +784,13 @@ pub(crate) fn fixup_objfile(
     }
 
     if !late_rodata_asm.is_empty() {
-        late_rodata_source_name_start = Some("_asmpp_late_rodata_start".to_string());
-        late_rodata_source_name_end = Some("_asmpp_late_rodata_end".to_string());
         asm.push(".section .late_rodata".to_string());
         // Put some padding at the start to avoid conflating symbols with
         // references to the whole section.
         asm.push(".word 0, 0".to_string());
-        asm.push(format!(
-            "glabel {}",
-            late_rodata_source_name_start.as_ref().unwrap()
-        ));
+        asm.push(format!("glabel {}", late_rodata_source_name_start));
         asm.extend(late_rodata_asm.iter().cloned());
-        asm.push(format!(
-            "glabel {}",
-            late_rodata_source_name_end.as_ref().unwrap()
-        ));
+        asm.push(format!("glabel {}", late_rodata_source_name_end));
     }
 
     let temp_dir = TempDir::with_prefix("asm_processor")?;
@@ -941,11 +928,11 @@ pub(crate) fn fixup_objfile(
         let target = objfile.find_section_mut(".rodata").unwrap();
         let mut source_pos = asm_objfile
             .symtab()
-            .find_symbol_in_section(&late_rodata_source_name_start.unwrap(), source)
+            .find_symbol_in_section(late_rodata_source_name_start, source)
             .unwrap();
         let source_end = asm_objfile
             .symtab()
-            .find_symbol_in_section(&late_rodata_source_name_end.unwrap(), source)
+            .find_symbol_in_section(late_rodata_source_name_end, source)
             .unwrap();
         let mut expected_size: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
         expected_size *= 4;
@@ -956,20 +943,16 @@ pub(crate) fn fixup_objfile(
         }
         let mut new_data = target.data.clone();
 
-        for (dummy_bytes_list, jtbl_rodata_size) in all_late_rodata_dummy_bytes
+        for (dummy_bytes_list, &jtbl_rodata_size) in all_late_rodata_dummy_bytes
             .iter_mut()
             .zip(all_jtbl_rodata_size.iter())
         {
             let dummy_bytes_list_len = dummy_bytes_list.len();
 
             for (index, dummy_bytes) in dummy_bytes_list.iter_mut().enumerate() {
-                let dummy_bytes = match endian {
-                    Endian::Big => dummy_bytes,
-                    Endian::Little => {
-                        dummy_bytes.reverse();
-                        dummy_bytes
-                    }
-                };
+                if endian == Endian::Little {
+                    dummy_bytes.reverse();
+                }
 
                 let mut pos = target.data[last_rodata_pos..]
                     .windows(4)
@@ -997,18 +980,18 @@ pub(crate) fn fixup_objfile(
                 source_pos += 4;
             }
 
-            if *jtbl_rodata_size > 0 {
+            if jtbl_rodata_size > 0 {
                 assert!(!dummy_bytes_list.is_empty());
                 let pos = last_rodata_pos;
                 new_data[pos..pos + jtbl_rodata_size].copy_from_slice(
                     source.data[source_pos..source_pos + jtbl_rodata_size].as_ref(),
                 );
-                for i in (0..*jtbl_rodata_size).step_by(4) {
+                for i in (0..jtbl_rodata_size).step_by(4) {
                     moved_late_rodata.insert(source_pos + i, pos + i);
                     jtbl_rodata_positions.insert(pos + i);
                 }
                 last_rodata_pos += jtbl_rodata_size;
-                source_pos += *jtbl_rodata_size;
+                source_pos += jtbl_rodata_size;
             }
         }
         target.data = new_data;
@@ -1344,10 +1327,7 @@ pub(crate) fn fixup_objfile(
                     rel.sym_index = new_index[&symbol_entries[rel.sym_index].borrow().name];
                     nrels.push(rel.clone());
                 }
-                reltab.data = nrels
-                    .iter()
-                    .flat_map(|x| x.to_bin(endian))
-                    .collect();
+                reltab.data = nrels.iter().flat_map(|x| x.to_bin(endian)).collect();
                 reltab.relocations = nrels;
             }
         }
