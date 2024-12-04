@@ -114,7 +114,7 @@ impl GlobalState {
     fn func_prologue(&self, name: &str) -> String {
         if self.pascal {
             [
-                format!("procedure {}();", name).as_str(),
+                &format!("procedure {}();", name),
                 "type",
                 " pi = ^integer;",
                 " pf = ^single;",

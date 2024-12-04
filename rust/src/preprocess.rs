@@ -500,8 +500,8 @@ impl GlobalAsmBlock {
             let mut rodata_stack: Vec<String> = late_rodata_fn_output.clone();
             rodata_stack.reverse();
 
-            for (line, count) in &self.fn_ins_inds {
-                for _ in 0..*count {
+            for &(line, count) in &self.fn_ins_inds {
+                for _ in 0..count {
                     if fn_emitted > Self::MAX_FN_SIZE
                         && instr_count - tot_emitted > state.min_instr_count
                         && (rodata_stack.is_empty() || !rodata_stack.last().unwrap().is_empty())
@@ -515,33 +515,29 @@ impl GlobalAsmBlock {
                         fn_skipped = 0;
                         skipping = true;
                         let large_func_name = state.make_name("large_func");
-                        src[*line] += format!(
+                        src[line] += &format!(
                             " {} {} ",
                             state.func_epilogue(),
                             state.func_prologue(&large_func_name)
-                        )
-                        .as_str();
+                        );
                     }
 
-                    if skipping
-                        && fn_skipped
-                            < state.skip_instr_count
-                                + (if !rodata_stack.is_empty() {
-                                    state.prelude_if_late_rodata
-                                } else {
-                                    0
-                                })
-                    {
+                    let skip_for_late_rodata = if !rodata_stack.is_empty() {
+                        state.prelude_if_late_rodata
+                    } else {
+                        0
+                    };
+                    if skipping && fn_skipped < state.skip_instr_count + skip_for_late_rodata {
                         fn_skipped += 1;
                         tot_skipped += 1;
                     } else {
                         skipping = false;
-                        if !rodata_stack.is_empty() {
-                            src[*line] += rodata_stack.pop().unwrap().as_str();
+                        if let Some(entry) = rodata_stack.pop() {
+                            src[line] += &entry;
                         } else if state.pascal {
-                            src[*line] += state.pascal_assignment_int("i", 0).as_str();
+                            src[line] += state.pascal_assignment_int("i", 0).as_str();
                         } else {
-                            src[*line] += "*(volatile int*)0 = 0;";
+                            src[line] += "*(volatile int*)0 = 0;";
                         }
                     }
                     tot_emitted += 1;
