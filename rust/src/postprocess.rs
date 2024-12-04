@@ -11,7 +11,6 @@ use std::{
 };
 
 use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
-use encoding_rs::WINDOWS_1252;
 use enum_map::EnumMap;
 use temp_dir::TempDir;
 
@@ -121,11 +120,11 @@ struct Symbol {
     st_type: u8,
     st_bind: u8,
     st_visibility: u8,
-    name: String,
+    name: Vec<u8>,
 }
 
 impl Symbol {
-    fn new(data: &[u8], strtab: &Section, name: Option<String>, endian: Endian) -> BinResult<Self> {
+    fn new(data: &[u8], strtab: &Section, endian: Endian) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
         let data = SymbolData::read_options(&mut cursor, endian, ())?;
@@ -135,7 +134,7 @@ impl Symbol {
         let st_type = data.st_info & 0xf;
         let st_bind = data.st_info >> 4;
         let st_visibility = data.st_other & 0x3;
-        let name = name.unwrap_or_else(|| strtab.lookup_str(data.st_name as usize));
+        let name = strtab.lookup_str(data.st_name as usize);
 
         Ok(Self {
             st_name: data.st_name as usize,
@@ -272,7 +271,7 @@ struct Section {
     relocated_by: Vec<usize>,
     symbol_entries: Vec<Rc<RefCell<Symbol>>>,
     relocations: Vec<Relocation>,
-    name: Option<String>,
+    name: String,
 }
 
 impl Section {
@@ -298,7 +297,7 @@ impl Section {
             relocated_by: vec![],
             symbol_entries: vec![],
             relocations: vec![],
-            name: None,
+            name: "".into(),
         })
     }
 
@@ -330,19 +329,17 @@ impl Section {
         Self::new(&rv, data, index, endian).unwrap()
     }
 
-    fn lookup_str(&self, index: usize) -> String {
+    fn lookup_str(&self, index: usize) -> Vec<u8> {
         assert_eq!(self.header.sh_type, SHT_STRTAB);
         let to = self.data.iter().skip(index).position(|&x| x == 0).unwrap() + index;
-        let line = WINDOWS_1252.decode_without_bom_handling(&self.data[index..to]);
-        line.0.into_owned()
+        self.data[index..to].to_owned()
     }
 
-    fn add_str(&mut self, string: &str) -> u32 {
+    fn add_str(&mut self, string: &[u8]) -> u32 {
         assert_eq!(self.header.sh_type, SHT_STRTAB);
         let index = self.data.len() as u32;
 
-        let data = WINDOWS_1252.encode(string).0;
-        self.data.extend_from_slice(&data);
+        self.data.extend_from_slice(string);
         self.data.push(0);
         index
     }
@@ -364,17 +361,18 @@ impl Section {
         rv
     }
 
-    fn find_symbol(&self, name: &str) -> Option<(usize, usize)> {
+    fn find_symbol(&self, name: &[u8]) -> Option<(usize, usize)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
-            if s.borrow().name == name {
-                return Some((s.borrow().st_shndx, s.borrow().st_value));
+            let s = s.borrow();
+            if s.name == name {
+                return Some((s.st_shndx, s.st_value));
             }
         }
         None
     }
 
-    fn find_symbol_in_section(&self, name: &str, section: &Section) -> Option<usize> {
+    fn find_symbol_in_section(&self, name: &[u8], section: &Section) -> Option<usize> {
         let (st_shndx, st_value) = self.find_symbol(name)?;
         assert_eq!(st_shndx, section.index);
         Some(st_value)
@@ -385,8 +383,7 @@ impl Section {
         assert_eq!(self.header.sh_entsize, 16);
 
         for i in 0..(self.data.len() / 16) {
-            let symbol =
-                Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, None, endian).unwrap();
+            let symbol = Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, endian).unwrap();
             self.symbol_entries.push(Rc::new(RefCell::new(symbol)));
         }
     }
@@ -522,7 +519,7 @@ impl ElfFile {
 
         for i in 0..sections.len() {
             let s = &mut sections[i];
-            s.name = Some(shstr.lookup_str(s.header.sh_name as usize));
+            s.name = String::from_utf8(shstr.lookup_str(s.header.sh_name as usize)).unwrap();
 
             if s.header.sh_type == SHT_SYMTAB {
                 s.init_symbols(&sym_strtab, endian);
@@ -544,15 +541,11 @@ impl ElfFile {
     }
 
     fn find_section(&self, name: &str) -> Option<&Section> {
-        self.sections
-            .iter()
-            .find(|s| s.name.as_ref().unwrap() == name)
+        self.sections.iter().find(|s| s.name == name)
     }
 
     fn find_section_mut(&mut self, name: &str) -> Option<&mut Section> {
-        self.sections
-            .iter_mut()
-            .find(|s| s.name.as_ref().unwrap() == name)
+        self.sections.iter_mut().find(|s| s.name == name)
     }
 
     fn symtab(&self) -> &Section {
@@ -576,9 +569,9 @@ impl ElfFile {
             .sections
             .get_mut(self.header.e_shstrndx as usize)
             .unwrap();
-        let sh_name = shstr.add_str(name);
+        let sh_name = shstr.add_str(name.as_bytes());
         let mut s = Section::from_parts(sh_name, fields, data, self.sections.len(), endian);
-        s.name = Some(name.to_string());
+        s.name = name.to_string();
         self.sections.push(s);
     }
 
@@ -676,20 +669,22 @@ pub(crate) fn fixup_objfile(
     // Generate an assembly file with all the assembly we need to fill in. For
     // simplicity we pad with nops/.space so that addresses match exactly, so we
     // don't have to fix up relocations/symbol references.
-    let mut all_text_glabels: HashSet<String> = HashSet::new();
-    let mut func_sizes: HashMap<String, usize> = HashMap::new();
+    let mut all_text_glabels: HashSet<Vec<u8>> = HashSet::new();
+    let mut func_sizes: HashMap<Vec<u8>, usize> = HashMap::new();
 
     for function in functions.iter() {
+        let text_glabels = function
+            .text_glabels
+            .iter()
+            .map(|x| output_enc.encode(x))
+            .collect::<Result<Vec<_>>>()?;
         let mut ifdefed = false;
-        for (sectype, (temp_name, size)) in function.data.iter() {
-            if temp_name.is_none() {
-                continue;
+        for (sectype, &(ref temp_name, size)) in function.data.iter() {
+            let Some(temp_name) = temp_name else { continue };
+            if size == 0 {
+                panic!("Size of section {} is 0", sectype.as_str());
             }
-            let temp_name = temp_name.as_ref().unwrap();
-            if *size == 0 {
-                panic!("Size of section {} is 0", temp_name);
-            }
-            let loc = objfile.symtab().find_symbol(temp_name);
+            let loc = objfile.symtab().find_symbol(temp_name.as_bytes());
             if loc.is_none() {
                 ifdefed = true;
                 break;
@@ -720,33 +715,33 @@ pub(crate) fn fixup_objfile(
             }
             to_copy[sectype].push(ToCopyData {
                 loc,
-                size: *size,
-                temp_name: temp_name.to_string(),
+                size,
+                temp_name: temp_name.clone(),
                 fn_desc: function.fn_desc.clone(),
             });
-            if !function.text_glabels.is_empty() && sectype == OutputSection::Text {
-                func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
+            if !text_glabels.is_empty() && sectype == OutputSection::Text {
+                func_sizes.insert(text_glabels.first().unwrap().to_vec(), size);
             }
-            prev_locs[sectype] = loc + *size;
+            prev_locs[sectype] = loc + size;
         }
 
         if !ifdefed {
-            all_text_glabels.extend(function.text_glabels.iter().cloned());
+            all_text_glabels.extend(text_glabels.iter().map(|x| x.to_vec()));
             all_late_rodata_dummy_bytes.push(function.late_rodata_dummy_bytes.clone());
             all_jtbl_rodata_size.push(function.jtbl_rodata_size);
             late_rodata_asm.extend(function.late_rodata_asm_conts.iter().cloned());
             for (sectype, (temp_name, _)) in function.data.iter() {
-                if temp_name.is_some() {
+                if let Some(temp_name) = temp_name {
                     asm.push(format!(".section {}", sectype));
-                    asm.push(format!("glabel {}_asm_start", temp_name.as_ref().unwrap()));
+                    asm.push(format!("glabel {}_asm_start", temp_name));
                 }
             }
             asm.push(".text".to_owned());
             asm.extend(function.asm_conts.iter().cloned());
             for (sectype, (temp_name, _)) in function.data.iter() {
-                if temp_name.is_some() {
+                if let Some(temp_name) = temp_name {
                     asm.push(format!(".section {}", sectype));
-                    asm.push(format!("glabel {}_asm_end", temp_name.as_ref().unwrap()));
+                    asm.push(format!("glabel {}_asm_end", temp_name));
                 }
             }
         }
@@ -774,13 +769,12 @@ pub(crate) fn fixup_objfile(
         .join(format!("asm_processor_{}.s", obj_stem));
     {
         let mut s_file = File::create(&s_file_path)?;
-        s_file.write_all(asm_prelude.as_bytes())?;
-        s_file.write_all("\n".as_bytes())?;
+        s_file.write_all(&output_enc.encode(asm_prelude)?)?;
+        s_file.write_all(&output_enc.encode("\n")?)?;
 
         for line in asm {
-            let line = output_enc.encode(&line)?;
-            s_file.write_all(&line)?;
-            s_file.write_all("\n".as_bytes())?;
+            s_file.write_all(&output_enc.encode(&line)?)?;
+            s_file.write_all(&output_enc.encode("\n")?)?;
         }
     }
 
@@ -842,11 +836,11 @@ pub(crate) fn fixup_objfile(
         {
             let loc1 = asm_objfile
                 .symtab()
-                .find_symbol_in_section(&format!("{}_asm_start", &temp_name), source)
+                .find_symbol_in_section(format!("{}_asm_start", &temp_name).as_bytes(), source)
                 .unwrap();
             let loc2 = asm_objfile
                 .symtab()
-                .find_symbol_in_section(&format!("{}_asm_end", &temp_name), source)
+                .find_symbol_in_section(format!("{}_asm_end", &temp_name).as_bytes(), source)
                 .unwrap();
             if loc1 != loc {
                 panic!(
@@ -897,11 +891,11 @@ pub(crate) fn fixup_objfile(
         let target = objfile.find_section_mut(".rodata").unwrap();
         let mut source_pos = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_start, source)
+            .find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source)
             .unwrap();
         let source_end = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_end, source)
+            .find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source)
             .unwrap();
         let mut expected_size: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
         expected_size *= 4;
@@ -997,7 +991,7 @@ pub(crate) fn fixup_objfile(
         .symbol_entries
         .iter()
         .skip(1)
-        .filter(|x| !x.borrow().name.starts_with("_asmpp_"))
+        .filter(|x| !x.borrow().name.starts_with(b"_asmpp_"))
         .cloned()
         .collect();
 
@@ -1006,15 +1000,12 @@ pub(crate) fn fixup_objfile(
         if is_local && !relocated_symbols.contains(s) {
             continue;
         }
-        if s.borrow().name.starts_with("_asmpp_") {
+        if s.borrow().name.starts_with(b"_asmpp_") {
             assert!(!relocated_symbols.contains(s));
             continue;
         }
         if s.borrow().st_shndx != SHN_UNDEF && s.borrow().st_shndx != SHN_ABS {
-            let section_name = asm_objfile.sections[s.borrow().st_shndx]
-                .name
-                .clone()
-                .unwrap();
+            let section_name = asm_objfile.sections[s.borrow().st_shndx].name.clone();
             let mut target_section_name = section_name.clone();
             if section_name == ".late_rodata" {
                 target_section_name = ".rodata".to_string();
@@ -1145,7 +1136,7 @@ pub(crate) fn fixup_objfile(
                         st_type: symtype,
                         st_visibility: STV_DEFAULT,
                         st_shndx: section.index,
-                        name: String::from_utf8_lossy(&symbol_name).to_string(), // TODO
+                        name: symbol_name,
                     };
                     strtab_index += emitted_symbol_name.len() + 1;
                     new_strtab_data.extend(&emitted_symbol_name);
@@ -1187,13 +1178,13 @@ pub(crate) fn fixup_objfile(
     let mut newer_syms = vec![];
     let mut name_to_sym = HashMap::new();
     for s in new_syms.iter_mut() {
-        if s.borrow().name == "_gp_disp" {
+        if s.borrow().name == b"_gp_disp" {
             s.borrow_mut().st_type = STT_OBJECT;
         }
         if s.borrow().st_bind == STB_LOCAL && s.borrow().st_shndx == SHN_UNDEF {
             return Err(anyhow::anyhow!(
                 "local symbol \"{}\" is undefined",
-                s.borrow().name
+                String::from_utf8_lossy(&s.borrow().name)
             ));
         }
         if s.borrow().name.is_empty() {
@@ -1214,7 +1205,7 @@ pub(crate) fn fixup_objfile(
                 {
                     return Err(anyhow::anyhow!(
                         "symbol \"{}\" defined twice",
-                        s.borrow().name
+                        String::from_utf8_lossy(&s.borrow().name)
                     ));
                 } else {
                     old_syms.push(SymPair {
@@ -1233,7 +1224,7 @@ pub(crate) fn fixup_objfile(
     new_syms.sort_by_key(|a| {
         (
             a.borrow().st_bind != STB_LOCAL,
-            a.borrow().name == "_gp_disp",
+            a.borrow().name == b"_gp_disp",
         )
     });
 
@@ -1242,7 +1233,7 @@ pub(crate) fn fixup_objfile(
         .filter(|x| x.borrow().st_bind == STB_LOCAL)
         .count();
     let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
-    let mut new_index: HashMap<String, usize> = HashMap::new();
+    let mut new_index: HashMap<Vec<u8>, usize> = HashMap::new();
 
     for (i, s) in new_syms.iter().enumerate() {
         new_index.insert(s.borrow().name.clone(), i);
