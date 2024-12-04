@@ -1146,35 +1146,26 @@ pub fn fixup_objfile(
             .len();
         let mut new_strtab_data = vec![];
 
-        let ifd_max = u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?) as usize;
-        let cb_fd_offset =
-            u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?) as usize;
-        let cb_sym_offset =
-            u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?) as usize;
-        let cb_ss_offset =
-            u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?) as usize;
+        let read_u32 =
+            |data: &[u8], offset| u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+
+        let ifd_max = read_u32(&mdebug_section.data, 18 * 4) as usize;
+        let cb_fd_offset = read_u32(&mdebug_section.data, 19 * 4) as usize;
+        let cb_sym_offset = read_u32(&mdebug_section.data, 9 * 4) as usize;
+        let cb_ss_offset = read_u32(&mdebug_section.data, 15 * 4) as usize;
 
         for i in 0..ifd_max {
             let offset = cb_fd_offset + 18 * 4 * i;
-            let iss_base =
-                u32::from_be_bytes(objfile.data[(offset + 2 * 4)..(offset + 3 * 4)].try_into()?)
-                    as usize;
-            let isym_base =
-                u32::from_be_bytes(objfile.data[(offset + 4 * 4)..(offset + 5 * 4)].try_into()?)
-                    as usize;
-            let csym =
-                u32::from_be_bytes(objfile.data[(offset + 5 * 4)..(offset + 6 * 4)].try_into()?)
-                    as usize;
+            let iss_base = read_u32(&objfile.data, offset + 2 * 4) as usize;
+            let isym_base = read_u32(&objfile.data, offset + 4 * 4) as usize;
+            let csym = read_u32(&objfile.data, offset + 5 * 4) as usize;
             let mut scope_level = 0;
 
             for j in 0..csym {
                 let offset2 = cb_sym_offset + 12 * (isym_base + j);
-                let iss =
-                    u32::from_be_bytes(objfile.data[offset2..(offset2 + 4)].try_into()?) as usize;
-                let value =
-                    u32::from_be_bytes(objfile.data[(offset2 + 4)..(offset2 + 8)].try_into()?);
-                let st_sc_index =
-                    u32::from_be_bytes(objfile.data[(offset2 + 8)..(offset2 + 12)].try_into()?);
+                let iss = read_u32(&objfile.data, offset2) as usize;
+                let value = read_u32(&objfile.data, offset2 + 4);
+                let st_sc_index = read_u32(&objfile.data, offset2 + 8);
                 let st = st_sc_index >> 26;
                 let sc = (st_sc_index >> 21) & 0x1F;
 
