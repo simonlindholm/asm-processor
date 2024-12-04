@@ -60,16 +60,21 @@ impl GlobalAsmBlock {
         }
     }
 
-    fn re_comment_replacer(caps: &regex::Captures) -> String {
-        let s = caps[0].to_string();
-        if s.starts_with("/") || s.starts_with("#") {
-            " ".to_owned()
-        } else {
-            s
-        }
+    fn fail_without_line<T>(&self, msg: &str) -> Result<T> {
+        Err(anyhow::anyhow!("{}\nwithin {}", msg, self.fn_desc))
+    }
+
+    fn fail_at_line<T>(&self, msg: &str, line: &str) -> Result<T> {
+        Err(anyhow::anyhow!(
+            "{}\nwithin {} at line {}",
+            msg,
+            self.fn_desc,
+            line
+        ))
     }
 
     fn count_quoted_size(
+        &self,
         line: &str,
         z: bool,
         real_line: &str,
@@ -92,7 +97,7 @@ impl GlobalAsmBlock {
                 if c == b'"' {
                     in_quote = true;
                     if z && !has_comma {
-                        return Err(anyhow::anyhow!(".asciiz with glued strings is not supported due to GNU as version diffs\n{}", real_line));
+                        return self.fail_at_line(".asciiz with glued strings is not supported due to GNU as version diffs", real_line);
                     }
                     num_parts += 1;
                 } else if c == b',' {
@@ -109,10 +114,7 @@ impl GlobalAsmBlock {
                     continue;
                 }
                 if i == line.len() {
-                    return Err(anyhow::anyhow!(
-                        "backslash at end of line not supported\n{}",
-                        real_line
-                    ));
+                    return self.fail_at_line("backslash at end of line not supported", real_line);
                 }
                 let c = line[i];
                 i += 1;
@@ -134,13 +136,10 @@ impl GlobalAsmBlock {
         }
 
         if in_quote {
-            return Err(anyhow::anyhow!(
-                "unterminated string literal\n{}",
-                real_line
-            ));
+            return self.fail_at_line("unterminated string literal", real_line);
         }
         if num_parts == 0 {
-            return Err(anyhow::anyhow!(".ascii with no string\n{}", real_line));
+            return self.fail_at_line(".ascii with no string", real_line);
         }
         Ok(ret + if z { num_parts } else { 0 })
     }
@@ -156,21 +155,18 @@ impl GlobalAsmBlock {
         if (self.cur_section == InputSection::Text || self.cur_section == InputSection::LateRodata)
             && size % 4 != 0
         {
-            return Err(anyhow::anyhow!("size must be a multiple of 4 {}", line));
+            return self.fail_at_line("size must be a multiple of 4", line);
         }
 
         if size < 0 {
-            return Err(anyhow::anyhow!("size cannot be negative {}", line));
+            return self.fail_at_line("size cannot be negative", line);
         }
 
         self.fn_section_sizes[self.cur_section] += size as usize;
 
         if self.cur_section == InputSection::Text {
             if self.text_glabels.is_empty() {
-                return Err(anyhow::anyhow!(
-                    ".text block without an initial glabel {}",
-                    line
-                ));
+                return self.fail_at_line(".text block without an initial glabel", line);
             }
             self.fn_ins_inds
                 .push((self.num_lines - 1, size as usize / 4));
@@ -196,9 +192,18 @@ impl GlobalAsmBlock {
             )
         });
 
+        fn re_comment_replacer(caps: &regex::Captures) -> String {
+            let s = caps[0].to_string();
+            if s.starts_with("/") || s.starts_with("#") {
+                " ".to_owned()
+            } else {
+                s
+            }
+        }
+
         let real_line = line.clone();
         line = re_comment_or_string
-            .replace_all(&line, Self::re_comment_replacer)
+            .replace_all(&line, re_comment_replacer)
             .into_owned();
         line = line.trim().to_string();
         line = re_label.replace_all(&line, "").into_owned();
@@ -233,30 +238,30 @@ impl GlobalAsmBlock {
                 let name = first_arg.split_whitespace().last().unwrap();
                 match InputSection::from_str(name) {
                     Some(s) => s,
-                    None => return Err(anyhow::anyhow!("Unknown section: {}", name)),
+                    None => {
+                        return self.fail_at_line("unrecognized .section directive", &real_line)
+                    }
                 }
             };
 
             changed_section = true;
         } else if line.starts_with(".late_rodata_alignment") {
             if self.cur_section != InputSection::LateRodata {
-                return Err(anyhow::anyhow!(format!(
-                    ".late_rodata_alignment must occur within .late_rodata section\n{}",
-                    real_line
-                )));
+                return self.fail_at_line(
+                    ".late_rodata_alignment must occur within .late_rodata section",
+                    &real_line,
+                );
             }
 
             let value = line.split_whitespace().nth(1).unwrap().parse::<usize>()?;
             if value != 4 && value != 8 {
-                return Err(anyhow::anyhow!(format!(
-                    ".late_rodata_alignment argument must be 4 or 8\n{}",
-                    real_line
-                )));
+                return self
+                    .fail_at_line(".late_rodata_alignment argument must be 4 or 8", &real_line);
             }
             if self.late_rodata_alignment != 0 && self.late_rodata_alignment != value {
-                return Err(anyhow::anyhow!(format!(
+                return self.fail_without_line(
                     ".late_rodata_alignment alignment assumption conflicts with earlier .double directive. Make sure to provide explicit alignment padding."
-                )));
+                );
             }
             self.late_rodata_alignment = value;
             changed_section = true;
@@ -283,13 +288,15 @@ impl GlobalAsmBlock {
                     self.late_rodata_alignment_from_context = true;
                 } else if self.late_rodata_alignment != 8 - align8 {
                     if self.late_rodata_alignment_from_context {
-                        return Err(anyhow::anyhow!(format!(
-                            "found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.\n{}", &real_line
-                        )));
+                        return self.fail_at_line(
+                            "found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.",
+                            &real_line
+                        );
                     } else {
-                        return Err(anyhow::anyhow!(format!(
-                            ".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.\n{}", real_line
-                        )));
+                        return self.fail_at_line(
+                            ".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.\n{}",
+                            &real_line
+                        );
                     }
                 }
 
@@ -302,25 +309,19 @@ impl GlobalAsmBlock {
         } else if line.starts_with(".balign") {
             let align = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             if align != 4 {
-                return Err(anyhow::anyhow!(format!(
-                    "only .balign 4 is supported, found .balign {}",
-                    align
-                )));
+                return self.fail_at_line("only .balign 4 is supported", &real_line);
             }
             self.align(4);
         } else if line.starts_with(".align") {
             let align = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             if align != 2 {
-                return Err(anyhow::anyhow!(format!(
-                    "only .align 2 is supported, found .align {}",
-                    align
-                )));
+                return self.fail_at_line("only .align 2 is supported", &real_line);
             }
             self.align(4);
         } else if line.starts_with(".asci") {
             let z = line.starts_with(".asciz") || line.starts_with(".asciiz");
             self.add_sized(
-                Self::count_quoted_size(&line, z, &real_line, output_enc)? as isize,
+                self.count_quoted_size(&line, z, &real_line, output_enc)? as isize,
                 &real_line,
             )?;
         } else if line.starts_with(".byte") {
@@ -333,10 +334,7 @@ impl GlobalAsmBlock {
             self.add_sized(2 * line.split(',').count() as isize, &real_line)?;
         } else if line.starts_with(".size") {
         } else if line.starts_with('.') {
-            return Err(anyhow::anyhow!(format!(
-                "asm directive not supported {}",
-                real_line
-            )));
+            return self.fail_at_line("asm directive not supported", &real_line);
         } else {
             // Unfortunately, macros are hard to support for .rodata --
             // we don't know how how space they will expand to before
@@ -347,10 +345,10 @@ impl GlobalAsmBlock {
             // Similarly, we can't currently deal with pseudo-instructions
             // that expand to several real instructions.
             if self.cur_section != InputSection::Text {
-                return Err(anyhow::anyhow!(format!(
-                    "instruction or macro call in non-.text section? not supported\n{}",
-                    real_line
-                )));
+                return self.fail_at_line(
+                    "instruction or macro call in non-.text section? not supported",
+                    &real_line,
+                );
             }
             self.add_sized(4, &real_line)?;
         }
@@ -488,7 +486,7 @@ impl GlobalAsmBlock {
             src[self.num_lines] = state.func_epilogue();
             let instr_count = self.fn_section_sizes[InputSection::Text] / 4;
             if instr_count < state.min_instr_count {
-                return Err(anyhow::anyhow!(format!("too short .text block",)));
+                return self.fail_without_line("too short .text block");
             }
             let mut tot_emitted = 0;
             let mut tot_skipped = 0;
@@ -546,21 +544,19 @@ impl GlobalAsmBlock {
             if !rodata_stack.is_empty() {
                 let size = late_rodata_fn_output.len() / 3;
                 let available = instr_count - tot_skipped;
-                return Err(anyhow::anyhow!(format!(
+                return self.fail_without_line(&format!(
                     "late rodata to text ratio is too high: {} / {} must be <= 1/3\n
                     add .late_rodata_alignment (4|8) to the .late_rodata block
                     to double the allowed ratio.",
                     size, available
-                )));
+                ));
             }
         }
 
         let mut rodata_name = None;
         if self.fn_section_sizes[InputSection::Rodata] > 0 {
             if state.pascal {
-                return Err(anyhow::anyhow!(format!(
-                    ".rodata isn't supported with Pascal for now"
-                )));
+                return self.fail_without_line(".rodata isn't supported with Pascal for now");
             }
             let new_name = state.make_name("rodata");
             src[self.num_lines] += format!(
@@ -596,9 +592,7 @@ impl GlobalAsmBlock {
         if self.fn_section_sizes[InputSection::Bss] > 0 {
             let new_name = state.make_name("bss");
             if state.pascal {
-                return Err(anyhow::anyhow!(format!(
-                    ".bss isn't supported with Pascal for now"
-                )));
+                return self.fail_without_line(".bss isn't supported with Pascal for now");
             }
             src[self.num_lines] += format!(
                 " char {}[{}];",
