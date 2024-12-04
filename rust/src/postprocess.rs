@@ -1389,7 +1389,7 @@ pub(crate) fn fixup_objfile(
                         target_reltab.data.extend(new_data);
                     } else {
                         objfile.add_section(
-                            format!("rel{}", target_sectype).as_str(),
+                            format!(".rel{}", target_sectype).as_str(),
                             &HeaderFields {
                                 sh_type: SHT_REL,
                                 sh_flags: 0,
@@ -1408,7 +1408,7 @@ pub(crate) fn fixup_objfile(
                     target_reltaba.data.extend(new_data);
                 } else {
                     objfile.add_section(
-                        format!("rel{}", target_sectype).as_str(),
+                        format!(".rela{}", target_sectype).as_str(),
                         &HeaderFields {
                             sh_type: SHT_REL,
                             sh_flags: 0,
