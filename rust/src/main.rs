@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use asm::GlobalAsmBlock;
 use clap::{Parser, ValueEnum};
-use elf::ElfFile;
+use elf::fixup_objfile;
 use regex::Regex;
 use temp_dir::TempDir;
 
@@ -518,7 +518,7 @@ fn run(
             }
         };
 
-        ElfFile::fixup_objfile(
+        fixup_objfile(
             &objfile,
             &functions,
             &asm_prelude,

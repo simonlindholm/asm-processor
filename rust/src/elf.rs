@@ -483,13 +483,6 @@ pub struct ElfFile {
     symtab: usize,
 }
 
-struct ToCopyData {
-    loc: usize,
-    size: usize,
-    temp_name: String,
-    fn_desc: String,
-}
-
 // satisfy clippy
 pub(crate) struct HeaderFields {
     sh_type: u32,
@@ -670,770 +663,751 @@ impl ElfFile {
         writer.flush().unwrap();
         Ok(())
     }
+}
 
-    pub fn fixup_objfile(
-        objfile_path: &PathBuf,
-        functions: &[Function],
-        asm_prelude: &str,
-        assembler: &str,
-        output_enc: &Encoding,
-        drop_mdebug_gptab: bool,
-        convert_statics: SymbolVisibility,
-    ) -> Result<()> {
-        const SECTIONS: [&str; 4] = [".data", ".text", ".rodata", ".bss"];
+struct ToCopyData {
+    loc: usize,
+    size: usize,
+    temp_name: String,
+    fn_desc: String,
+}
 
-        let objfile_data = fs::read(objfile_path)?;
-        let mut objfile = ElfFile::new(&objfile_data)?;
-        let endian = objfile.endian;
+pub fn fixup_objfile(
+    objfile_path: &PathBuf,
+    functions: &[Function],
+    asm_prelude: &str,
+    assembler: &str,
+    output_enc: &Encoding,
+    drop_mdebug_gptab: bool,
+    convert_statics: SymbolVisibility,
+) -> Result<()> {
+    const SECTIONS: [&str; 4] = [".data", ".text", ".rodata", ".bss"];
 
-        let mut prev_locs =
-            HashMap::from([(".text", 0), (".data", 0), (".rodata", 0), (".bss", 0)]);
+    let objfile_data = fs::read(objfile_path)?;
+    let mut objfile = ElfFile::new(&objfile_data)?;
+    let endian = objfile.endian;
 
-        let mut to_copy: HashMap<&str, Vec<ToCopyData>> = HashMap::from([
-            (".text", vec![]),
-            (".data", vec![]),
-            (".rodata", vec![]),
-            (".bss", vec![]),
-        ]);
+    let mut prev_locs = HashMap::from([(".text", 0), (".data", 0), (".rodata", 0), (".bss", 0)]);
 
-        let mut asm: Vec<String> = vec![];
-        let mut all_late_rodata_dummy_bytes: Vec<Vec<[u8; 4]>> = vec![];
-        let mut all_jtbl_rodata_size: Vec<usize> = vec![];
-        let mut late_rodata_asm: Vec<String> = vec![];
-        let mut late_rodata_source_name_start: Option<String> = None;
-        let mut late_rodata_source_name_end: Option<String> = None;
+    let mut to_copy: HashMap<&str, Vec<ToCopyData>> = HashMap::from([
+        (".text", vec![]),
+        (".data", vec![]),
+        (".rodata", vec![]),
+        (".bss", vec![]),
+    ]);
 
-        // Generate an assembly file with all the assembly we need to fill in. For
-        // simplicity we pad with nops/.space so that addresses match exactly, so we
-        // don't have to fix up relocations/symbol references.
-        let mut all_text_glabels: HashSet<String> = HashSet::new();
-        let mut func_sizes: HashMap<String, usize> = HashMap::new();
+    let mut asm: Vec<String> = vec![];
+    let mut all_late_rodata_dummy_bytes: Vec<Vec<[u8; 4]>> = vec![];
+    let mut all_jtbl_rodata_size: Vec<usize> = vec![];
+    let mut late_rodata_asm: Vec<String> = vec![];
+    let mut late_rodata_source_name_start: Option<String> = None;
+    let mut late_rodata_source_name_end: Option<String> = None;
 
-        for function in functions.iter() {
-            let mut ifdefed = false;
-            for (sectype, (temp_name, size)) in function.data.iter() {
-                if temp_name.is_none() {
-                    continue;
-                }
-                let temp_name = temp_name.as_ref().unwrap();
-                if *size == 0 {
-                    panic!("Size of section {} is 0", temp_name);
-                }
-                let loc = objfile.symtab().find_symbol(temp_name);
-                if loc.is_none() {
-                    ifdefed = true;
-                    break;
-                }
-                let loc = loc.unwrap().1;
-                let prev_loc = prev_locs.get(sectype.as_str()).unwrap();
-                if loc < *prev_loc {
-                    // If the dummy C generates too little asm, and we have two
-                    // consecutive GLOBAL_ASM blocks, we detect that error here.
-                    // On the other hand, if it generates too much, we don't have
-                    // a good way of discovering that error: it's indistinguishable
-                    // from a static symbol occurring after the GLOBAL_ASM block.
-                    panic!(
-                        "Wrongly computed size for section {} (diff {}). This is an asm-processor bug!",
-                        sectype,
-                        prev_loc - loc
-                    );
-                }
-                if loc != *prev_loc {
-                    asm.push(format!(".section {}", sectype));
-                    if sectype == ".text" {
-                        for _ in 0..((loc - *prev_loc) / 4) {
-                            asm.push("nop".to_owned());
-                        }
-                    } else {
-                        asm.push(format!(".space {}", loc - *prev_loc));
-                    }
-                }
-                to_copy.get_mut(sectype.as_str()).unwrap().push(ToCopyData {
-                    loc,
-                    size: *size,
-                    temp_name: temp_name.to_string(),
-                    fn_desc: function.fn_desc.clone(),
-                });
-                if !function.text_glabels.is_empty() && sectype == ".text" {
-                    func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
-                }
-                *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size;
-            }
+    // Generate an assembly file with all the assembly we need to fill in. For
+    // simplicity we pad with nops/.space so that addresses match exactly, so we
+    // don't have to fix up relocations/symbol references.
+    let mut all_text_glabels: HashSet<String> = HashSet::new();
+    let mut func_sizes: HashMap<String, usize> = HashMap::new();
 
-            if !ifdefed {
-                all_text_glabels.extend(function.text_glabels.iter().cloned());
-                all_late_rodata_dummy_bytes.push(function.late_rodata_dummy_bytes.clone());
-                all_jtbl_rodata_size.push(function.jtbl_rodata_size);
-                late_rodata_asm.extend(function.late_rodata_asm_conts.iter().cloned());
-                for (sectype, (temp_name, _)) in function.data.iter() {
-                    if temp_name.is_some() {
-                        asm.push(format!(".section {}", sectype));
-                        asm.push(format!("glabel {}_asm_start", temp_name.as_ref().unwrap()));
-                    }
-                }
-                asm.push(".text".to_owned());
-                asm.extend(function.asm_conts.iter().cloned());
-                for (sectype, (temp_name, _)) in function.data.iter() {
-                    if temp_name.is_some() {
-                        asm.push(format!(".section {}", sectype));
-                        asm.push(format!("glabel {}_asm_end", temp_name.as_ref().unwrap()));
-                    }
-                }
-            }
-        }
-
-        if !late_rodata_asm.is_empty() {
-            late_rodata_source_name_start = Some("_asmpp_late_rodata_start".to_string());
-            late_rodata_source_name_end = Some("_asmpp_late_rodata_end".to_string());
-            asm.push(".section .late_rodata".to_string());
-            // Put some padding at the start to avoid conflating symbols with
-            // references to the whole section.
-            asm.push(".word 0, 0".to_string());
-            asm.push(format!(
-                "glabel {}",
-                late_rodata_source_name_start.as_ref().unwrap()
-            ));
-            asm.extend(late_rodata_asm.iter().cloned());
-            asm.push(format!(
-                "glabel {}",
-                late_rodata_source_name_end.as_ref().unwrap()
-            ));
-        }
-
-        let temp_dir = TempDir::with_prefix("asm_processor")?;
-
-        let obj_stem = objfile_path.file_stem().unwrap().to_str().unwrap();
-
-        let o_file_path = temp_dir
-            .path()
-            .join(format!("asm_processor_{}.o", obj_stem));
-        let s_file_path = temp_dir
-            .path()
-            .join(format!("asm_processor_{}.s", obj_stem));
-        {
-            let mut s_file = File::create(&s_file_path)?;
-            s_file.write_all(asm_prelude.as_bytes())?;
-            s_file.write_all("\n".as_bytes())?;
-
-            for line in asm {
-                let line = output_enc.encode(&line)?;
-                s_file.write_all(&line)?;
-                s_file.write_all("\n".as_bytes())?;
-            }
-        }
-
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "{} {} -o {}",
-                assembler,
-                shlex::try_quote(s_file_path.to_str().unwrap())
-                    .unwrap()
-                    .into_owned(),
-                shlex::try_quote(o_file_path.to_str().unwrap())
-                    .unwrap()
-                    .into_owned()
-            ))
-            .status()
-            .expect("Failed to run assembler");
-        if !status.success() {
-            return Err(anyhow::anyhow!("Failed to assemble"));
-        }
-        let asm_objfile = ElfFile::new(&fs::read(&o_file_path)?)?;
-
-        // Remove clutter from objdump output for tests, and make the tests
-        // portable by avoiding absolute paths. Outside of tests .mdebug is
-        // useful for showing source together with asm, though.
-        let mdebug_section = objfile.find_section(".mdebug").cloned();
-        if drop_mdebug_gptab {
-            objfile.drop_mdebug_gptab();
-        }
-
-        // Unify reginfo sections
-        let mut target_reginfo = objfile.find_section_mut(".reginfo");
-        if target_reginfo.is_some() {
-            let source_reginfo_data = &asm_objfile.find_section(".reginfo").unwrap().data;
-            let data = &mut target_reginfo.as_mut().unwrap().data;
-            for i in 0..20 {
-                data[i] |= source_reginfo_data[i];
-            }
-        }
-
-        // Move over section contents
-        let mut modified_text_positions = HashSet::new();
-        let mut jtbl_rodata_positions: HashSet<usize> = HashSet::new();
-        let mut last_rodata_pos = 0;
-        for sectype in SECTIONS {
-            if !to_copy.contains_key(sectype) || to_copy.get(sectype).unwrap().is_empty() {
+    for function in functions.iter() {
+        let mut ifdefed = false;
+        for (sectype, (temp_name, size)) in function.data.iter() {
+            if temp_name.is_none() {
                 continue;
             }
-            let source = asm_objfile.find_section(sectype);
-            let Some(source) = source else {
-                panic!("didn't find source section: {}", sectype);
-            };
-            for &ToCopyData {
+            let temp_name = temp_name.as_ref().unwrap();
+            if *size == 0 {
+                panic!("Size of section {} is 0", temp_name);
+            }
+            let loc = objfile.symtab().find_symbol(temp_name);
+            if loc.is_none() {
+                ifdefed = true;
+                break;
+            }
+            let loc = loc.unwrap().1;
+            let prev_loc = prev_locs.get(sectype.as_str()).unwrap();
+            if loc < *prev_loc {
+                // If the dummy C generates too little asm, and we have two
+                // consecutive GLOBAL_ASM blocks, we detect that error here.
+                // On the other hand, if it generates too much, we don't have
+                // a good way of discovering that error: it's indistinguishable
+                // from a static symbol occurring after the GLOBAL_ASM block.
+                panic!(
+                    "Wrongly computed size for section {} (diff {}). This is an asm-processor bug!",
+                    sectype,
+                    prev_loc - loc
+                );
+            }
+            if loc != *prev_loc {
+                asm.push(format!(".section {}", sectype));
+                if sectype == ".text" {
+                    for _ in 0..((loc - *prev_loc) / 4) {
+                        asm.push("nop".to_owned());
+                    }
+                } else {
+                    asm.push(format!(".space {}", loc - *prev_loc));
+                }
+            }
+            to_copy.get_mut(sectype.as_str()).unwrap().push(ToCopyData {
                 loc,
-                size,
-                ref temp_name,
-                ref fn_desc,
-            } in to_copy.get(sectype).unwrap().iter()
-            {
-                let loc1 = asm_objfile
-                    .symtab()
-                    .find_symbol_in_section(&format!("{}_asm_start", &temp_name), source)
-                    .unwrap();
-                let loc2 = asm_objfile
-                    .symtab()
-                    .find_symbol_in_section(&format!("{}_asm_end", &temp_name), source)
-                    .unwrap();
-                if loc1 != loc {
-                    panic!(
-                        "assembly and C files don't line up for section {}, {}",
-                        sectype, fn_desc
+                size: *size,
+                temp_name: temp_name.to_string(),
+                fn_desc: function.fn_desc.clone(),
+            });
+            if !function.text_glabels.is_empty() && sectype == ".text" {
+                func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
+            }
+            *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size;
+        }
+
+        if !ifdefed {
+            all_text_glabels.extend(function.text_glabels.iter().cloned());
+            all_late_rodata_dummy_bytes.push(function.late_rodata_dummy_bytes.clone());
+            all_jtbl_rodata_size.push(function.jtbl_rodata_size);
+            late_rodata_asm.extend(function.late_rodata_asm_conts.iter().cloned());
+            for (sectype, (temp_name, _)) in function.data.iter() {
+                if temp_name.is_some() {
+                    asm.push(format!(".section {}", sectype));
+                    asm.push(format!("glabel {}_asm_start", temp_name.as_ref().unwrap()));
+                }
+            }
+            asm.push(".text".to_owned());
+            asm.extend(function.asm_conts.iter().cloned());
+            for (sectype, (temp_name, _)) in function.data.iter() {
+                if temp_name.is_some() {
+                    asm.push(format!(".section {}", sectype));
+                    asm.push(format!("glabel {}_asm_end", temp_name.as_ref().unwrap()));
+                }
+            }
+        }
+    }
+
+    if !late_rodata_asm.is_empty() {
+        late_rodata_source_name_start = Some("_asmpp_late_rodata_start".to_string());
+        late_rodata_source_name_end = Some("_asmpp_late_rodata_end".to_string());
+        asm.push(".section .late_rodata".to_string());
+        // Put some padding at the start to avoid conflating symbols with
+        // references to the whole section.
+        asm.push(".word 0, 0".to_string());
+        asm.push(format!(
+            "glabel {}",
+            late_rodata_source_name_start.as_ref().unwrap()
+        ));
+        asm.extend(late_rodata_asm.iter().cloned());
+        asm.push(format!(
+            "glabel {}",
+            late_rodata_source_name_end.as_ref().unwrap()
+        ));
+    }
+
+    let temp_dir = TempDir::with_prefix("asm_processor")?;
+
+    let obj_stem = objfile_path.file_stem().unwrap().to_str().unwrap();
+
+    let o_file_path = temp_dir
+        .path()
+        .join(format!("asm_processor_{}.o", obj_stem));
+    let s_file_path = temp_dir
+        .path()
+        .join(format!("asm_processor_{}.s", obj_stem));
+    {
+        let mut s_file = File::create(&s_file_path)?;
+        s_file.write_all(asm_prelude.as_bytes())?;
+        s_file.write_all("\n".as_bytes())?;
+
+        for line in asm {
+            let line = output_enc.encode(&line)?;
+            s_file.write_all(&line)?;
+            s_file.write_all("\n".as_bytes())?;
+        }
+    }
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{} {} -o {}",
+            assembler,
+            shlex::try_quote(s_file_path.to_str().unwrap())
+                .unwrap()
+                .into_owned(),
+            shlex::try_quote(o_file_path.to_str().unwrap())
+                .unwrap()
+                .into_owned()
+        ))
+        .status()
+        .expect("Failed to run assembler");
+    if !status.success() {
+        return Err(anyhow::anyhow!("Failed to assemble"));
+    }
+    let asm_objfile = ElfFile::new(&fs::read(&o_file_path)?)?;
+
+    // Remove clutter from objdump output for tests, and make the tests
+    // portable by avoiding absolute paths. Outside of tests .mdebug is
+    // useful for showing source together with asm, though.
+    let mdebug_section = objfile.find_section(".mdebug").cloned();
+    if drop_mdebug_gptab {
+        objfile.drop_mdebug_gptab();
+    }
+
+    // Unify reginfo sections
+    let mut target_reginfo = objfile.find_section_mut(".reginfo");
+    if target_reginfo.is_some() {
+        let source_reginfo_data = &asm_objfile.find_section(".reginfo").unwrap().data;
+        let data = &mut target_reginfo.as_mut().unwrap().data;
+        for i in 0..20 {
+            data[i] |= source_reginfo_data[i];
+        }
+    }
+
+    // Move over section contents
+    let mut modified_text_positions = HashSet::new();
+    let mut jtbl_rodata_positions: HashSet<usize> = HashSet::new();
+    let mut last_rodata_pos = 0;
+    for sectype in SECTIONS {
+        if !to_copy.contains_key(sectype) || to_copy.get(sectype).unwrap().is_empty() {
+            continue;
+        }
+        let source = asm_objfile.find_section(sectype);
+        let Some(source) = source else {
+            panic!("didn't find source section: {}", sectype);
+        };
+        for &ToCopyData {
+            loc,
+            size,
+            ref temp_name,
+            ref fn_desc,
+        } in to_copy.get(sectype).unwrap().iter()
+        {
+            let loc1 = asm_objfile
+                .symtab()
+                .find_symbol_in_section(&format!("{}_asm_start", &temp_name), source)
+                .unwrap();
+            let loc2 = asm_objfile
+                .symtab()
+                .find_symbol_in_section(&format!("{}_asm_end", &temp_name), source)
+                .unwrap();
+            if loc1 != loc {
+                panic!(
+                    "assembly and C files don't line up for section {}, {}",
+                    sectype, fn_desc
+                );
+            }
+            if loc2 - loc1 != size {
+                return Err(anyhow::anyhow!(
+                    "incorrectly computed size for section {}, {}. If using .double, make sure to provide explicit alignment padding.",
+                    sectype,
+                    fn_desc
+                ));
+            }
+        }
+
+        if sectype == ".bss" {
+            continue;
+        }
+
+        let mut target = objfile.find_section_mut(sectype);
+        assert!(target.is_some());
+        let mut data = target.as_ref().unwrap().data.clone();
+        for &ToCopyData { loc, size, .. } in to_copy.get(sectype).unwrap().iter() {
+            data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
+
+            if sectype == ".text" {
+                assert_eq!(size % 4, 0);
+                assert_eq!(loc % 4, 0);
+                for j in 0..size / 4 {
+                    modified_text_positions.insert(loc + 4 * j);
+                }
+            } else if sectype == ".rodata" {
+                last_rodata_pos = loc + size;
+            }
+        }
+        target.as_mut().unwrap().data = data;
+    }
+
+    // Move over late rodata. This is heuristic, sadly, since I can't think
+    // of another way of doing it.
+    let mut moved_late_rodata: HashMap<usize, usize> = HashMap::new();
+    if (!all_late_rodata_dummy_bytes.is_empty()
+        && all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty()))
+        || (!all_jtbl_rodata_size.is_empty() && all_jtbl_rodata_size.iter().any(|&s| s > 0))
+    {
+        let source = asm_objfile.find_section(".late_rodata").unwrap();
+        let target = objfile.find_section_mut(".rodata").unwrap();
+        let mut source_pos = asm_objfile
+            .symtab()
+            .find_symbol_in_section(late_rodata_source_name_start.unwrap().as_str(), source)
+            .unwrap();
+        let source_end = asm_objfile
+            .symtab()
+            .find_symbol_in_section(late_rodata_source_name_end.unwrap().as_str(), source)
+            .unwrap();
+        let mut expected_size: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
+        expected_size *= 4;
+        expected_size += all_jtbl_rodata_size.iter().sum::<usize>();
+
+        if source_end - source_pos != expected_size {
+            return Err(anyhow::anyhow!("computed wrong size of .late_rodata"));
+        }
+        let mut new_data = target.data.clone();
+
+        for (dummy_bytes_list, jtbl_rodata_size) in all_late_rodata_dummy_bytes
+            .iter_mut()
+            .zip(all_jtbl_rodata_size.iter())
+        {
+            let dummy_bytes_list_len = dummy_bytes_list.len();
+
+            for (index, dummy_bytes) in dummy_bytes_list.iter_mut().enumerate() {
+                let dummy_bytes = match endian {
+                    Endian::Big => dummy_bytes,
+                    Endian::Little => {
+                        dummy_bytes.reverse();
+                        dummy_bytes
+                    }
+                };
+
+                let mut pos = target.data[last_rodata_pos..]
+                    .windows(4)
+                    .position(|x| x == dummy_bytes)
+                    .unwrap()
+                    + last_rodata_pos;
+
+                if index == 0
+                    && dummy_bytes_list_len > 1
+                    && target.data[pos + 4..pos + 8] == *b"\0\0\0\0"
+                {
+                    // Ugly hack to handle double alignment for non-matching builds.
+                    // We were told by .late_rodata_alignment (or deduced from a .double)
+                    // that a function's late_rodata started out 4 (mod 8), and emitted
+                    // a float and then a double. But it was actually 0 (mod 8), so our
+                    // double was moved by 4 bytes. To make them adjacent to keep jump
+                    // tables correct, move the float by 4 bytes as well.
+                    new_data[pos..pos + 4].copy_from_slice(b"\0\0\0\0");
+                    pos += 4;
+                }
+                new_data[pos..pos + 4]
+                    .copy_from_slice(source.data[source_pos..source_pos + 4].as_ref());
+                moved_late_rodata.insert(source_pos, pos);
+                last_rodata_pos = pos + 4;
+                source_pos += 4;
+            }
+
+            if *jtbl_rodata_size > 0 {
+                assert!(!dummy_bytes_list.is_empty());
+                let pos = last_rodata_pos;
+                new_data[pos..pos + jtbl_rodata_size].copy_from_slice(
+                    source.data[source_pos..source_pos + jtbl_rodata_size].as_ref(),
+                );
+                for i in (0..*jtbl_rodata_size).step_by(4) {
+                    moved_late_rodata.insert(source_pos + i, pos + i);
+                    jtbl_rodata_positions.insert(pos + i);
+                }
+                last_rodata_pos += jtbl_rodata_size;
+                source_pos += *jtbl_rodata_size;
+            }
+        }
+        target.data = new_data;
+    }
+
+    // Merge strtab data.
+    let strtab_adj = {
+        let idx = objfile.symtab().strtab.unwrap();
+        let strtab = objfile.sections.get_mut(idx).unwrap();
+
+        let strtab_adj = strtab.data.len();
+        strtab.data.extend(
+            asm_objfile.sections[asm_objfile.symtab().strtab.unwrap()]
+                .data
+                .iter()
+                .cloned(),
+        );
+
+        strtab_adj
+    };
+
+    // Find relocated symbols
+    let mut relocated_symbols = vec![];
+    for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
+        // objfile
+        if let Some(sec) = objfile.find_section(sectype) {
+            for reltab_idx in &sec.relocated_by {
+                let reltab = &objfile.sections[*reltab_idx];
+                for rel in &reltab.relocations {
+                    relocated_symbols.push(
+                        objfile
+                            .symtab()
+                            .symbol_entries
+                            .get(rel.sym_index)
+                            .unwrap()
+                            .clone(),
                     );
                 }
-                if loc2 - loc1 != size {
+            }
+        }
+
+        // asm_objfile
+        if let Some(sec) = asm_objfile.find_section(sectype) {
+            for reltab_idx in &sec.relocated_by {
+                let reltab = &asm_objfile.sections[*reltab_idx];
+                for rel in &reltab.relocations {
+                    relocated_symbols.push(
+                        asm_objfile
+                            .symtab()
+                            .symbol_entries
+                            .get(rel.sym_index)
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+            }
+        }
+    }
+
+    // Move over symbols, deleting the temporary function labels.
+    // Skip over new local symbols that aren't relocated against, to
+    // avoid conflicts.
+    let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
+    let mut new_syms: Vec<Rc<RefCell<Symbol>>> = objfile
+        .symtab()
+        .symbol_entries
+        .iter()
+        .skip(1)
+        .filter(|x| !x.borrow().name.starts_with("_asmpp_"))
+        .cloned()
+        .collect();
+
+    for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
+        let is_local = i < asm_objfile.symtab().header.sh_info as usize;
+        if is_local && !relocated_symbols.contains(s) {
+            continue;
+        }
+        if s.borrow().name.starts_with("_asmpp_") {
+            assert!(!relocated_symbols.contains(s));
+            continue;
+        }
+        if s.borrow().data.st_shndx != SHN_UNDEF && s.borrow().data.st_shndx != SHN_ABS {
+            let section_name = asm_objfile.sections[s.borrow().data.st_shndx as usize]
+                .name
+                .clone()
+                .unwrap();
+            let mut target_section_name = section_name.clone();
+            if section_name == ".late_rodata" {
+                target_section_name = ".rodata".to_string();
+            } else if !SECTIONS.contains(&section_name.as_str()) {
+                return Err(anyhow::anyhow!("generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found {}", section_name));
+            }
+            let objfile_section = objfile.find_section(&target_section_name);
+            if objfile_section.is_none() {
+                return Err(anyhow::anyhow!(
+                    "generated assembly .o has section that real objfile lacks: {}",
+                    target_section_name
+                ));
+            }
+            s.borrow_mut().data.st_shndx = objfile_section.unwrap().index as u16;
+            // glabels aren't marked as functions, making objdump output confusing. Fix that.
+            if all_text_glabels.contains(s.borrow().name.as_str()) {
+                s.borrow_mut().set_type(STT_FUNC);
+                if func_sizes.contains_key(s.borrow().name.as_str()) {
+                    let size: u32 = func_sizes[s.borrow().name.as_str()] as u32;
+                    s.borrow_mut().data.st_size = size;
+                }
+            }
+            if section_name == ".late_rodata" {
+                if s.borrow().data.st_value == 0 {
+                    // This must be a symbol corresponding to the whole .late_rodata
+                    // section, being referred to from a relocation.
+                    // Moving local symbols is tricky, because it requires fixing up
+                    // lo16/hi16 relocation references to .late_rodata+<offset>.
+                    // Just disallow it for now.
                     return Err(anyhow::anyhow!(
-                        "incorrectly computed size for section {}, {}. If using .double, make sure to provide explicit alignment padding.",
-                        sectype,
-                        fn_desc
+                        "local symbols in .late_rodata are not allowed"
                     ));
                 }
+                let st_val = s.borrow().data.st_value as usize;
+                s.borrow_mut().data.st_value = moved_late_rodata[&st_val] as u32;
             }
-
-            if sectype == ".bss" {
-                continue;
-            }
-
-            let mut target = objfile.find_section_mut(sectype);
-            assert!(target.is_some());
-            let mut data = target.as_ref().unwrap().data.clone();
-            for &ToCopyData { loc, size, .. } in to_copy.get(sectype).unwrap().iter() {
-                data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
-
-                if sectype == ".text" {
-                    assert_eq!(size % 4, 0);
-                    assert_eq!(loc % 4, 0);
-                    for j in 0..size / 4 {
-                        modified_text_positions.insert(loc + 4 * j);
-                    }
-                } else if sectype == ".rodata" {
-                    last_rodata_pos = loc + size;
-                }
-            }
-            target.as_mut().unwrap().data = data;
         }
+        s.borrow_mut().data.st_name += strtab_adj as u32;
+        new_syms.push(s.clone());
+    }
 
-        // Move over late rodata. This is heuristic, sadly, since I can't think
-        // of another way of doing it.
-        let mut moved_late_rodata: HashMap<usize, usize> = HashMap::new();
-        if (!all_late_rodata_dummy_bytes.is_empty()
-            && all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty()))
-            || (!all_jtbl_rodata_size.is_empty() && all_jtbl_rodata_size.iter().any(|&s| s > 0))
-        {
-            let source = asm_objfile.find_section(".late_rodata").unwrap();
-            let target = objfile.find_section_mut(".rodata").unwrap();
-            let mut source_pos = asm_objfile
-                .symtab()
-                .find_symbol_in_section(late_rodata_source_name_start.unwrap().as_str(), source)
-                .unwrap();
-            let source_end = asm_objfile
-                .symtab()
-                .find_symbol_in_section(late_rodata_source_name_end.unwrap().as_str(), source)
-                .unwrap();
-            let mut expected_size: usize =
-                all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
-            expected_size *= 4;
-            expected_size += all_jtbl_rodata_size.iter().sum::<usize>();
+    let make_statics_global = match convert_statics {
+        SymbolVisibility::No => false,
+        SymbolVisibility::Local => false,
+        SymbolVisibility::Global => true,
+        SymbolVisibility::GlobalWithFilename => true,
+    };
 
-            if source_end - source_pos != expected_size {
-                return Err(anyhow::anyhow!("computed wrong size of .late_rodata"));
-            }
-            let mut new_data = target.data.clone();
+    // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
+    if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
+        let mdebug_section = mdebug_section.unwrap();
+        let mut static_name_count = HashMap::new();
+        let mut strtab_index = objfile.sections[objfile.symtab().strtab.unwrap()]
+            .data
+            .len();
+        let mut new_strtab_data = vec![];
 
-            for (dummy_bytes_list, jtbl_rodata_size) in all_late_rodata_dummy_bytes
-                .iter_mut()
-                .zip(all_jtbl_rodata_size.iter())
-            {
-                let dummy_bytes_list_len = dummy_bytes_list.len();
+        let ifd_max = u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?) as usize;
+        let cb_fd_offset =
+            u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?) as usize;
+        let cb_sym_offset =
+            u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?) as usize;
+        let cb_ss_offset =
+            u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?) as usize;
 
-                for (index, dummy_bytes) in dummy_bytes_list.iter_mut().enumerate() {
-                    let dummy_bytes = match endian {
-                        Endian::Big => dummy_bytes,
-                        Endian::Little => {
-                            dummy_bytes.reverse();
-                            dummy_bytes
+        for i in 0..ifd_max {
+            let offset = cb_fd_offset + 18 * 4 * i;
+            let iss_base =
+                u32::from_be_bytes(objfile.data[(offset + 2 * 4)..(offset + 3 * 4)].try_into()?)
+                    as usize;
+            let isym_base =
+                u32::from_be_bytes(objfile.data[(offset + 4 * 4)..(offset + 5 * 4)].try_into()?)
+                    as usize;
+            let csym =
+                u32::from_be_bytes(objfile.data[(offset + 5 * 4)..(offset + 6 * 4)].try_into()?)
+                    as usize;
+            let mut scope_level = 0;
+
+            for j in 0..csym {
+                let offset2 = cb_sym_offset + 12 * (isym_base + j);
+                let iss =
+                    u32::from_be_bytes(objfile.data[offset2..(offset2 + 4)].try_into()?) as usize;
+                let value =
+                    u32::from_be_bytes(objfile.data[(offset2 + 4)..(offset2 + 8)].try_into()?);
+                let st_sc_index =
+                    u32::from_be_bytes(objfile.data[(offset2 + 8)..(offset2 + 12)].try_into()?);
+                let st = st_sc_index >> 26;
+                let sc = (st_sc_index >> 21) & 0x1F;
+
+                if st == MIPS_DEBUG_ST_STATIC || st == MIPS_DEBUG_ST_STATIC_PROC {
+                    let symbol_name_offset = cb_ss_offset + iss_base + iss;
+                    let symbol_name_offset_end = objfile_data
+                        .iter()
+                        .skip(symbol_name_offset)
+                        .position(|x| *x == 0)
+                        .unwrap()
+                        + symbol_name_offset;
+                    let mut symbol_name = String::from_utf8_lossy(
+                        &objfile_data[symbol_name_offset..symbol_name_offset_end],
+                    )
+                    .into_owned();
+                    if scope_level > 1 {
+                        // For in-function statics, append an increasing counter to
+                        // the name, to avoid duplicate conflicting symbols.
+                        let count = static_name_count.get(symbol_name.as_str()).unwrap_or(&0) + 1;
+                        static_name_count.insert(symbol_name.clone(), count);
+                        symbol_name = format!("{}:{}", symbol_name, count);
+                    }
+                    let emitted_symbol_name =
+                        if convert_statics == SymbolVisibility::GlobalWithFilename {
+                            // Change the emitted symbol name to include the filename,
+                            // but don't let that affect deduplication logic (we still
+                            // want to be able to reference statics from GLOBAL_ASM).
+                            format!("{}:{}", objfile_path.to_string_lossy(), symbol_name)
+                        } else {
+                            symbol_name.clone()
+                        };
+                    let section_name = match sc {
+                        1 => ".text",
+                        2 => ".data",
+                        3 => ".bss",
+                        15 => ".rodata",
+                        _ => {
+                            return Err(anyhow::anyhow!("unsupported MIPS_DEBUG_SC value: {}", sc));
                         }
                     };
-
-                    let mut pos = target.data[last_rodata_pos..]
-                        .windows(4)
-                        .position(|x| x == dummy_bytes)
-                        .unwrap()
-                        + last_rodata_pos;
-
-                    if index == 0
-                        && dummy_bytes_list_len > 1
-                        && target.data[pos + 4..pos + 8] == *b"\0\0\0\0"
-                    {
-                        // Ugly hack to handle double alignment for non-matching builds.
-                        // We were told by .late_rodata_alignment (or deduced from a .double)
-                        // that a function's late_rodata started out 4 (mod 8), and emitted
-                        // a float and then a double. But it was actually 0 (mod 8), so our
-                        // double was moved by 4 bytes. To make them adjacent to keep jump
-                        // tables correct, move the float by 4 bytes as well.
-                        new_data[pos..pos + 4].copy_from_slice(b"\0\0\0\0");
-                        pos += 4;
-                    }
-                    new_data[pos..pos + 4]
-                        .copy_from_slice(source.data[source_pos..source_pos + 4].as_ref());
-                    moved_late_rodata.insert(source_pos, pos);
-                    last_rodata_pos = pos + 4;
-                    source_pos += 4;
+                    let section = objfile.find_section(section_name);
+                    let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
+                    let binding = if make_statics_global {
+                        STB_GLOBAL
+                    } else {
+                        STB_LOCAL
+                    };
+                    let sym = Symbol::from_parts(
+                        SymbolData {
+                            st_name: strtab_index as u32,
+                            st_value: value,
+                            st_size: 0,
+                            st_info: ((binding as u32) << 4 | symtype as u32) as u8,
+                            st_other: STV_DEFAULT,
+                            st_shndx: section.unwrap().index as u16,
+                        },
+                        symbol_name.as_str(),
+                        endian,
+                    )?;
+                    strtab_index += emitted_symbol_name.len() + 1;
+                    new_strtab_data.push(emitted_symbol_name + "\0");
+                    new_syms.push(Rc::new(RefCell::new(sym)));
                 }
-
-                if *jtbl_rodata_size > 0 {
-                    assert!(!dummy_bytes_list.is_empty());
-                    let pos = last_rodata_pos;
-                    new_data[pos..pos + jtbl_rodata_size].copy_from_slice(
-                        source.data[source_pos..source_pos + jtbl_rodata_size].as_ref(),
-                    );
-                    for i in (0..*jtbl_rodata_size).step_by(4) {
-                        moved_late_rodata.insert(source_pos + i, pos + i);
-                        jtbl_rodata_positions.insert(pos + i);
+                match st {
+                    MIPS_DEBUG_ST_FILE
+                    | MIPS_DEBUG_ST_STRUCT
+                    | MIPS_DEBUG_ST_UNION
+                    | MIPS_DEBUG_ST_ENUM
+                    | MIPS_DEBUG_ST_BLOCK
+                    | MIPS_DEBUG_ST_PROC
+                    | MIPS_DEBUG_ST_STATIC_PROC => {
+                        scope_level += 1;
                     }
-                    last_rodata_pos += jtbl_rodata_size;
-                    source_pos += *jtbl_rodata_size;
+                    MIPS_DEBUG_ST_END => {
+                        scope_level -= 1;
+                    }
+                    _ => {}
                 }
             }
-            target.data = new_data;
+            assert_eq!(scope_level, 0);
         }
 
-        // Merge strtab data.
-        let strtab_adj = {
+        {
             let idx = objfile.symtab().strtab.unwrap();
             let strtab = objfile.sections.get_mut(idx).unwrap();
 
-            let strtab_adj = strtab.data.len();
-            strtab.data.extend(
-                asm_objfile.sections[asm_objfile.symtab().strtab.unwrap()]
-                    .data
-                    .iter()
-                    .cloned(),
-            );
-
-            strtab_adj
-        };
-
-        // Find relocated symbols
-        let mut relocated_symbols = vec![];
-        for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
-            // objfile
-            if let Some(sec) = objfile.find_section(sectype) {
-                for reltab_idx in &sec.relocated_by {
-                    let reltab = &objfile.sections[*reltab_idx];
-                    for rel in &reltab.relocations {
-                        relocated_symbols.push(
-                            objfile
-                                .symtab()
-                                .symbol_entries
-                                .get(rel.sym_index)
-                                .unwrap()
-                                .clone(),
-                        );
-                    }
-                }
-            }
-
-            // asm_objfile
-            if let Some(sec) = asm_objfile.find_section(sectype) {
-                for reltab_idx in &sec.relocated_by {
-                    let reltab = &asm_objfile.sections[*reltab_idx];
-                    for rel in &reltab.relocations {
-                        relocated_symbols.push(
-                            asm_objfile
-                                .symtab()
-                                .symbol_entries
-                                .get(rel.sym_index)
-                                .unwrap()
-                                .clone(),
-                        );
-                    }
-                }
-            }
+            strtab.data.extend(new_strtab_data.join("").as_bytes());
         }
+    }
 
-        // Move over symbols, deleting the temporary function labels.
-        // Skip over new local symbols that aren't relocated against, to
-        // avoid conflicts.
-        let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
-        let mut new_syms: Vec<Rc<RefCell<Symbol>>> = objfile
-            .symtab()
-            .symbol_entries
-            .iter()
-            .skip(1)
-            .filter(|x| !x.borrow().name.starts_with("_asmpp_"))
-            .cloned()
-            .collect();
-
-        for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
-            let is_local = i < asm_objfile.symtab().header.sh_info as usize;
-            if is_local && !relocated_symbols.contains(s) {
-                continue;
-            }
-            if s.borrow().name.starts_with("_asmpp_") {
-                assert!(!relocated_symbols.contains(s));
-                continue;
-            }
-            if s.borrow().data.st_shndx != SHN_UNDEF && s.borrow().data.st_shndx != SHN_ABS {
-                let section_name = asm_objfile.sections[s.borrow().data.st_shndx as usize]
-                    .name
-                    .clone()
-                    .unwrap();
-                let mut target_section_name = section_name.clone();
-                if section_name == ".late_rodata" {
-                    target_section_name = ".rodata".to_string();
-                } else if !SECTIONS.contains(&section_name.as_str()) {
-                    return Err(anyhow::anyhow!("generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found {}", section_name));
-                }
-                let objfile_section = objfile.find_section(&target_section_name);
-                if objfile_section.is_none() {
-                    return Err(anyhow::anyhow!(
-                        "generated assembly .o has section that real objfile lacks: {}",
-                        target_section_name
-                    ));
-                }
-                s.borrow_mut().data.st_shndx = objfile_section.unwrap().index as u16;
-                // glabels aren't marked as functions, making objdump output confusing. Fix that.
-                if all_text_glabels.contains(s.borrow().name.as_str()) {
-                    s.borrow_mut().set_type(STT_FUNC);
-                    if func_sizes.contains_key(s.borrow().name.as_str()) {
-                        let size: u32 = func_sizes[s.borrow().name.as_str()] as u32;
-                        s.borrow_mut().data.st_size = size;
-                    }
-                }
-                if section_name == ".late_rodata" {
-                    if s.borrow().data.st_value == 0 {
-                        // This must be a symbol corresponding to the whole .late_rodata
-                        // section, being referred to from a relocation.
-                        // Moving local symbols is tricky, because it requires fixing up
-                        // lo16/hi16 relocation references to .late_rodata+<offset>.
-                        // Just disallow it for now.
-                        return Err(anyhow::anyhow!(
-                            "local symbols in .late_rodata are not allowed"
-                        ));
-                    }
-                    let st_val = s.borrow().data.st_value as usize;
-                    s.borrow_mut().data.st_value = moved_late_rodata[&st_val] as u32;
-                }
-            }
-            s.borrow_mut().data.st_name += strtab_adj as u32;
-            new_syms.push(s.clone());
+    // Get rid of duplicate symbols, favoring ones that are not UNDEF.
+    // Skip this for unnamed local symbols though.
+    new_syms.sort_by(|a, b| {
+        if a.borrow().data.st_shndx != SHN_UNDEF && b.borrow().data.st_shndx == SHN_UNDEF {
+            Ordering::Less
+        } else {
+            Ordering::Greater
         }
-
-        let make_statics_global = match convert_statics {
-            SymbolVisibility::No => false,
-            SymbolVisibility::Local => false,
-            SymbolVisibility::Global => true,
-            SymbolVisibility::GlobalWithFilename => true,
-        };
-
-        // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
-        if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
-            let mdebug_section = mdebug_section.unwrap();
-            let mut static_name_count = HashMap::new();
-            let mut strtab_index = objfile.sections[objfile.symtab().strtab.unwrap()]
-                .data
-                .len();
-            let mut new_strtab_data = vec![];
-
-            let ifd_max =
-                u32::from_be_bytes(mdebug_section.data[18 * 4..19 * 4].try_into()?) as usize;
-            let cb_fd_offset =
-                u32::from_be_bytes(mdebug_section.data[19 * 4..20 * 4].try_into()?) as usize;
-            let cb_sym_offset =
-                u32::from_be_bytes(mdebug_section.data[9 * 4..10 * 4].try_into()?) as usize;
-            let cb_ss_offset =
-                u32::from_be_bytes(mdebug_section.data[15 * 4..16 * 4].try_into()?) as usize;
-
-            for i in 0..ifd_max {
-                let offset = cb_fd_offset + 18 * 4 * i;
-                let iss_base = u32::from_be_bytes(
-                    objfile.data[(offset + 2 * 4)..(offset + 3 * 4)].try_into()?,
-                ) as usize;
-                let isym_base = u32::from_be_bytes(
-                    objfile.data[(offset + 4 * 4)..(offset + 5 * 4)].try_into()?,
-                ) as usize;
-                let csym = u32::from_be_bytes(
-                    objfile.data[(offset + 5 * 4)..(offset + 6 * 4)].try_into()?,
-                ) as usize;
-                let mut scope_level = 0;
-
-                for j in 0..csym {
-                    let offset2 = cb_sym_offset + 12 * (isym_base + j);
-                    let iss = u32::from_be_bytes(objfile.data[offset2..(offset2 + 4)].try_into()?)
-                        as usize;
-                    let value =
-                        u32::from_be_bytes(objfile.data[(offset2 + 4)..(offset2 + 8)].try_into()?);
-                    let st_sc_index =
-                        u32::from_be_bytes(objfile.data[(offset2 + 8)..(offset2 + 12)].try_into()?);
-                    let st = st_sc_index >> 26;
-                    let sc = (st_sc_index >> 21) & 0x1F;
-
-                    if st == MIPS_DEBUG_ST_STATIC || st == MIPS_DEBUG_ST_STATIC_PROC {
-                        let symbol_name_offset = cb_ss_offset + iss_base + iss;
-                        let symbol_name_offset_end = objfile_data
-                            .iter()
-                            .skip(symbol_name_offset)
-                            .position(|x| *x == 0)
-                            .unwrap()
-                            + symbol_name_offset;
-                        let mut symbol_name = String::from_utf8_lossy(
-                            &objfile_data[symbol_name_offset..symbol_name_offset_end],
-                        )
-                        .into_owned();
-                        if scope_level > 1 {
-                            // For in-function statics, append an increasing counter to
-                            // the name, to avoid duplicate conflicting symbols.
-                            let count =
-                                static_name_count.get(symbol_name.as_str()).unwrap_or(&0) + 1;
-                            static_name_count.insert(symbol_name.clone(), count);
-                            symbol_name = format!("{}:{}", symbol_name, count);
-                        }
-                        let emitted_symbol_name =
-                            if convert_statics == SymbolVisibility::GlobalWithFilename {
-                                // Change the emitted symbol name to include the filename,
-                                // but don't let that affect deduplication logic (we still
-                                // want to be able to reference statics from GLOBAL_ASM).
-                                format!("{}:{}", objfile_path.to_string_lossy(), symbol_name)
-                            } else {
-                                symbol_name.clone()
-                            };
-                        let section_name = match sc {
-                            1 => ".text",
-                            2 => ".data",
-                            3 => ".bss",
-                            15 => ".rodata",
-                            _ => {
-                                return Err(anyhow::anyhow!(
-                                    "unsupported MIPS_DEBUG_SC value: {}",
-                                    sc
-                                ));
-                            }
-                        };
-                        let section = objfile.find_section(section_name);
-                        let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
-                        let binding = if make_statics_global {
-                            STB_GLOBAL
-                        } else {
-                            STB_LOCAL
-                        };
-                        let sym = Symbol::from_parts(
-                            SymbolData {
-                                st_name: strtab_index as u32,
-                                st_value: value,
-                                st_size: 0,
-                                st_info: ((binding as u32) << 4 | symtype as u32) as u8,
-                                st_other: STV_DEFAULT,
-                                st_shndx: section.unwrap().index as u16,
-                            },
-                            symbol_name.as_str(),
-                            endian,
-                        )?;
-                        strtab_index += emitted_symbol_name.len() + 1;
-                        new_strtab_data.push(emitted_symbol_name + "\0");
-                        new_syms.push(Rc::new(RefCell::new(sym)));
-                    }
-                    match st {
-                        MIPS_DEBUG_ST_FILE
-                        | MIPS_DEBUG_ST_STRUCT
-                        | MIPS_DEBUG_ST_UNION
-                        | MIPS_DEBUG_ST_ENUM
-                        | MIPS_DEBUG_ST_BLOCK
-                        | MIPS_DEBUG_ST_PROC
-                        | MIPS_DEBUG_ST_STATIC_PROC => {
-                            scope_level += 1;
-                        }
-                        MIPS_DEBUG_ST_END => {
-                            scope_level -= 1;
-                        }
-                        _ => {}
-                    }
-                }
-                assert_eq!(scope_level, 0);
-            }
-
-            {
-                let idx = objfile.symtab().strtab.unwrap();
-                let strtab = objfile.sections.get_mut(idx).unwrap();
-
-                strtab.data.extend(new_strtab_data.join("").as_bytes());
-            }
+    });
+    let mut old_syms: Vec<SymPair> = vec![];
+    let mut newer_syms = vec![];
+    let mut name_to_sym = HashMap::new();
+    for s in new_syms.iter_mut() {
+        if s.borrow().name == "_gp_disp" {
+            s.borrow_mut().set_type(STT_OBJECT);
         }
-
-        // Get rid of duplicate symbols, favoring ones that are not UNDEF.
-        // Skip this for unnamed local symbols though.
-        new_syms.sort_by(|a, b| {
-            if a.borrow().data.st_shndx != SHN_UNDEF && b.borrow().data.st_shndx == SHN_UNDEF {
-                Ordering::Less
-            } else {
-                Ordering::Greater
+        if s.borrow().bind == STB_LOCAL && s.borrow().data.st_shndx == SHN_UNDEF {
+            return Err(anyhow::anyhow!(
+                "local symbol \"{}\" is undefined",
+                s.borrow().name
+            ));
+        }
+        if s.borrow().name.is_empty() {
+            if s.borrow().bind != STB_LOCAL {
+                return Err(anyhow::anyhow!("global symbol with no name"));
             }
-        });
-        let mut old_syms: Vec<SymPair> = vec![];
-        let mut newer_syms = vec![];
-        let mut name_to_sym = HashMap::new();
-        for s in new_syms.iter_mut() {
-            if s.borrow().name == "_gp_disp" {
-                s.borrow_mut().set_type(STT_OBJECT);
-            }
-            if s.borrow().bind == STB_LOCAL && s.borrow().data.st_shndx == SHN_UNDEF {
-                return Err(anyhow::anyhow!(
-                    "local symbol \"{}\" is undefined",
-                    s.borrow().name
-                ));
-            }
-            if s.borrow().name.is_empty() {
-                if s.borrow().bind != STB_LOCAL {
-                    return Err(anyhow::anyhow!("global symbol with no name"));
-                }
+            newer_syms.push(s.clone());
+        } else {
+            let existing = name_to_sym.get(&s.borrow().name);
+            if existing.is_none() {
+                name_to_sym.insert(s.borrow().name.clone(), s.clone());
                 newer_syms.push(s.clone());
             } else {
-                let existing = name_to_sym.get(&s.borrow().name);
-                if existing.is_none() {
-                    name_to_sym.insert(s.borrow().name.clone(), s.clone());
-                    newer_syms.push(s.clone());
+                let existing = existing.unwrap();
+                if s.borrow().data.st_shndx != SHN_UNDEF
+                    && !(existing.borrow().data.st_shndx == s.borrow().data.st_shndx
+                        && existing.borrow().data.st_value == s.borrow().data.st_value)
+                {
+                    return Err(anyhow::anyhow!(
+                        "symbol \"{}\" defined twice",
+                        s.borrow().name
+                    ));
                 } else {
-                    let existing = existing.unwrap();
-                    if s.borrow().data.st_shndx != SHN_UNDEF
-                        && !(existing.borrow().data.st_shndx == s.borrow().data.st_shndx
-                            && existing.borrow().data.st_value == s.borrow().data.st_value)
-                    {
-                        return Err(anyhow::anyhow!(
-                            "symbol \"{}\" defined twice",
-                            s.borrow().name
-                        ));
-                    } else {
-                        old_syms.push(SymPair {
-                            sym1: s.clone(),
-                            sym2: existing.clone(),
-                        });
-                    }
+                    old_syms.push(SymPair {
+                        sym1: s.clone(),
+                        sym2: existing.clone(),
+                    });
                 }
             }
         }
-        new_syms = newer_syms;
+    }
+    new_syms = newer_syms;
 
-        // Put local symbols in front, with the initial dummy entry first, and
-        // _gp_disp at the end if it exists.
-        new_syms.insert(0, empty_symbol.clone());
-        new_syms.sort_by_key(|a| (a.borrow().bind != STB_LOCAL, a.borrow().name == "_gp_disp"));
+    // Put local symbols in front, with the initial dummy entry first, and
+    // _gp_disp at the end if it exists.
+    new_syms.insert(0, empty_symbol.clone());
+    new_syms.sort_by_key(|a| (a.borrow().bind != STB_LOCAL, a.borrow().name == "_gp_disp"));
 
-        let num_local_syms = new_syms
-            .iter()
-            .filter(|x| x.borrow().bind == STB_LOCAL)
-            .count();
-        let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
-        let mut new_index = HashMap::new();
+    let num_local_syms = new_syms
+        .iter()
+        .filter(|x| x.borrow().bind == STB_LOCAL)
+        .count();
+    let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
+    let mut new_index = HashMap::new();
 
-        for (i, s) in new_syms.iter().enumerate() {
-            new_index.insert(s.borrow().name.clone(), i);
-        }
-        for sp in old_syms.iter() {
-            new_index.insert(
-                sp.sym1.borrow().name.clone(),
-                new_index[&sp.sym2.borrow().name],
-            );
-        }
+    for (i, s) in new_syms.iter().enumerate() {
+        new_index.insert(s.borrow().name.clone(), i);
+    }
+    for sp in old_syms.iter() {
+        new_index.insert(
+            sp.sym1.borrow().name.clone(),
+            new_index[&sp.sym2.borrow().name],
+        );
+    }
 
-        objfile.symtab_mut().data = new_sym_data;
-        objfile.symtab_mut().header.sh_info = num_local_syms as u32;
+    objfile.symtab_mut().data = new_sym_data;
+    objfile.symtab_mut().header.sh_info = num_local_syms as u32;
 
-        // Fix up relocation symbol references
-        for sectype in SECTIONS {
-            let target = objfile.find_section(sectype).cloned();
+    // Fix up relocation symbol references
+    for sectype in SECTIONS {
+        let target = objfile.find_section(sectype).cloned();
 
-            if let Some(target) = target {
-                let symbol_entries = objfile.symtab().symbol_entries.clone();
+        if let Some(target) = target {
+            let symbol_entries = objfile.symtab().symbol_entries.clone();
 
-                // fixup relocation symbol indices, since we butchered them above
-                for reltab in target.relocated_by.iter() {
-                    let reltab = &mut objfile.sections[*reltab];
-                    let mut nrels = vec![];
-                    for rel in reltab.relocations.iter() {
-                        let mut rel = rel.clone();
-                        if sectype == ".text" && modified_text_positions.contains(&rel.r_offset)
-                            || sectype == ".rodata" && jtbl_rodata_positions.contains(&rel.r_offset)
-                        {
-                            // don't include relocations for late_rodata dummy code
-                            continue;
-                        }
-                        rel.sym_index = new_index[&symbol_entries[rel.sym_index].borrow().name];
-                        nrels.push(rel.clone());
+            // fixup relocation symbol indices, since we butchered them above
+            for reltab in target.relocated_by.iter() {
+                let reltab = &mut objfile.sections[*reltab];
+                let mut nrels = vec![];
+                for rel in reltab.relocations.iter() {
+                    let mut rel = rel.clone();
+                    if sectype == ".text" && modified_text_positions.contains(&rel.r_offset)
+                        || sectype == ".rodata" && jtbl_rodata_positions.contains(&rel.r_offset)
+                    {
+                        // don't include relocations for late_rodata dummy code
+                        continue;
                     }
-                    reltab.data = nrels
-                        .iter()
-                        .flat_map(|x| x.to_bin(endian).unwrap())
-                        .collect();
-                    reltab.relocations = nrels;
+                    rel.sym_index = new_index[&symbol_entries[rel.sym_index].borrow().name];
+                    nrels.push(rel.clone());
                 }
+                reltab.data = nrels
+                    .iter()
+                    .flat_map(|x| x.to_bin(endian).unwrap())
+                    .collect();
+                reltab.relocations = nrels;
             }
         }
+    }
 
-        // Move over relocations
-        for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
-            if let Some(source) = asm_objfile.find_section(sectype) {
-                if source.data.is_empty() {
-                    continue;
-                }
+    // Move over relocations
+    for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
+        if let Some(source) = asm_objfile.find_section(sectype) {
+            if source.data.is_empty() {
+                continue;
+            }
 
-                let target_sectype = if *sectype == ".late_rodata" {
-                    ".rodata"
-                } else {
-                    sectype
-                };
-                let target_index = objfile.find_section(target_sectype).unwrap().index as u32;
-                for reltab in &source.relocated_by {
-                    let reltab = &mut asm_objfile.sections[*reltab].clone();
-                    for rel in &mut reltab.relocations {
-                        rel.sym_index = new_index[&asm_objfile.symtab().symbol_entries
-                            [rel.sym_index]
-                            .borrow()
-                            .name];
-                        if *sectype == ".late_rodata" {
-                            rel.r_offset = moved_late_rodata[&rel.r_offset];
-                        }
+            let target_sectype = if *sectype == ".late_rodata" {
+                ".rodata"
+            } else {
+                sectype
+            };
+            let target_index = objfile.find_section(target_sectype).unwrap().index as u32;
+            for reltab in &source.relocated_by {
+                let reltab = &mut asm_objfile.sections[*reltab].clone();
+                for rel in &mut reltab.relocations {
+                    rel.sym_index = new_index[&asm_objfile.symtab().symbol_entries[rel.sym_index]
+                        .borrow()
+                        .name];
+                    if *sectype == ".late_rodata" {
+                        rel.r_offset = moved_late_rodata[&rel.r_offset];
                     }
-                    let new_data: Vec<u8> = reltab
-                        .relocations
-                        .iter()
-                        .flat_map(|x| x.to_bin(endian).unwrap())
-                        .collect();
+                }
+                let new_data: Vec<u8> = reltab
+                    .relocations
+                    .iter()
+                    .flat_map(|x| x.to_bin(endian).unwrap())
+                    .collect();
 
-                    if reltab.header.sh_type == SHT_REL {
-                        if let Some(target_reltab) =
-                            objfile.find_section_mut(format!(".rel{}", target_sectype).as_str())
-                        {
-                            target_reltab.data.extend(new_data);
-                        } else {
-                            objfile.add_section(
-                                format!("rel{}", target_sectype).as_str(),
-                                &HeaderFields {
-                                    sh_type: SHT_REL,
-                                    sh_flags: 0,
-                                    sh_link: objfile.symtab().index as u32,
-                                    sh_info: target_index,
-                                    sh_addralign: 4,
-                                    sh_entsize: 8,
-                                },
-                                &new_data,
-                                endian,
-                            );
-                        }
-                    } else if let Some(target_reltaba) =
-                        objfile.find_section_mut(format!(".rela{}", target_sectype).as_str())
+                if reltab.header.sh_type == SHT_REL {
+                    if let Some(target_reltab) =
+                        objfile.find_section_mut(format!(".rel{}", target_sectype).as_str())
                     {
-                        target_reltaba.data.extend(new_data);
+                        target_reltab.data.extend(new_data);
                     } else {
                         objfile.add_section(
                             format!("rel{}", target_sectype).as_str(),
@@ -1449,16 +1423,34 @@ impl ElfFile {
                             endian,
                         );
                     }
+                } else if let Some(target_reltaba) =
+                    objfile.find_section_mut(format!(".rela{}", target_sectype).as_str())
+                {
+                    target_reltaba.data.extend(new_data);
+                } else {
+                    objfile.add_section(
+                        format!("rel{}", target_sectype).as_str(),
+                        &HeaderFields {
+                            sh_type: SHT_REL,
+                            sh_flags: 0,
+                            sh_link: objfile.symtab().index as u32,
+                            sh_info: target_index,
+                            sh_addralign: 4,
+                            sh_entsize: 8,
+                        },
+                        &new_data,
+                        endian,
+                    );
                 }
             }
         }
-
-        let mut file = std::fs::File::create(objfile_path).unwrap();
-        let mut writer = BufWriter::new(&mut file);
-        objfile.write(&mut writer)?;
-
-        fs::remove_file(s_file_path)?;
-        fs::remove_file(o_file_path)?;
-        Ok(())
     }
+
+    let mut file = std::fs::File::create(objfile_path).unwrap();
+    let mut writer = BufWriter::new(&mut file);
+    objfile.write(&mut writer)?;
+
+    fs::remove_file(s_file_path)?;
+    fs::remove_file(o_file_path)?;
+    Ok(())
 }
