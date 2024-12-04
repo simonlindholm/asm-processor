@@ -125,12 +125,7 @@ struct Symbol {
 }
 
 impl Symbol {
-    fn new(
-        data: &[u8],
-        strtab: Option<&Section>,
-        name: Option<String>,
-        endian: Endian,
-    ) -> BinResult<Self> {
+    fn new(data: &[u8], strtab: &Section, name: Option<String>, endian: Endian) -> BinResult<Self> {
         let mut cursor = Cursor::new(data);
 
         let data = SymbolData::read_options(&mut cursor, endian, ())?;
@@ -140,7 +135,7 @@ impl Symbol {
         let st_type = data.st_info & 0xf;
         let st_bind = data.st_info >> 4;
         let st_visibility = data.st_other & 0x3;
-        let name = name.unwrap_or_else(|| strtab.unwrap().lookup_str(data.st_name as usize));
+        let name = name.unwrap_or_else(|| strtab.lookup_str(data.st_name as usize));
 
         Ok(Self {
             st_name: data.st_name as usize,
@@ -275,11 +270,9 @@ struct Section {
     data: Vec<u8>,
     index: usize,
     relocated_by: Vec<usize>,
-    rel_target: Option<usize>,
     symbol_entries: Vec<Rc<RefCell<Symbol>>>,
     relocations: Vec<Relocation>,
     name: Option<String>,
-    strtab: Option<usize>,
 }
 
 impl Section {
@@ -303,11 +296,9 @@ impl Section {
             data,
             index,
             relocated_by: vec![],
-            rel_target: None,
             symbol_entries: vec![],
             relocations: vec![],
             name: None,
-            strtab: None,
         })
     }
 
@@ -389,16 +380,13 @@ impl Section {
         Some(st_value)
     }
 
-    fn init_symbols(&mut self, sections: &[Section], endian: Endian) {
+    fn init_symbols(&mut self, strtab: &Section, endian: Endian) {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         assert_eq!(self.header.sh_entsize, 16);
 
-        let strtab = sections.get(self.header.sh_link as usize).unwrap();
-        self.strtab = Some(strtab.index);
-
         for i in 0..(self.data.len() / 16) {
             let symbol =
-                Symbol::new(&self.data[i * 16..(i + 1) * 16], Some(strtab), None, endian).unwrap();
+                Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, None, endian).unwrap();
             self.symbol_entries.push(Rc::new(RefCell::new(symbol)));
         }
     }
@@ -477,6 +465,7 @@ struct ElfFile {
     header: ElfHeader,
     sections: Vec<Section>,
     symtab: usize,
+    sym_strtab: usize,
 }
 
 struct HeaderFields {
@@ -522,32 +511,26 @@ impl ElfFile {
             sections.push(section);
         }
 
-        let symtab = sections
+        let symtab_index = sections
             .iter()
-            .find(|s| s.header.sh_type == SHT_SYMTAB)
-            .unwrap()
-            .index;
+            .position(|s| s.header.sh_type == SHT_SYMTAB)
+            .unwrap();
+        let sym_strtab_index = sections[symtab_index].header.sh_link as usize;
 
-        let shstr = sections.get(header.e_shstrndx as usize).unwrap().clone();
-        let mut relocated_bys = vec![];
+        let shstr = sections[header.e_shstrndx as usize].clone();
+        let sym_strtab = sections[sym_strtab_index].clone();
 
-        let sections_before = sections.clone();
-
-        for s in sections.iter_mut() {
+        for i in 0..sections.len() {
+            let s = &mut sections[i];
             s.name = Some(shstr.lookup_str(s.header.sh_name as usize));
 
             if s.header.sh_type == SHT_SYMTAB {
-                s.init_symbols(&sections_before, endian);
+                s.init_symbols(&sym_strtab, endian);
             } else if s.is_rel() {
-                relocated_bys.push((s.header.sh_info as usize, s.index));
-
-                s.rel_target = Some(sections_before[s.header.sh_info as usize].index);
+                let target_index = s.header.sh_info as usize;
                 s.init_relocs(endian);
+                sections[target_index].relocated_by.push(i);
             }
-        }
-
-        for (target, reloc) in relocated_bys {
-            sections[target].relocated_by.push(reloc);
         }
 
         Ok(ElfFile {
@@ -555,7 +538,8 @@ impl ElfFile {
             endian,
             header,
             sections,
-            symtab,
+            symtab: symtab_index,
+            sym_strtab: sym_strtab_index,
         })
     }
 
@@ -572,11 +556,19 @@ impl ElfFile {
     }
 
     fn symtab(&self) -> &Section {
-        self.sections.get(self.symtab).unwrap()
+        &self.sections[self.symtab]
     }
 
     fn symtab_mut(&mut self) -> &mut Section {
-        self.sections.get_mut(self.symtab).unwrap()
+        &mut self.sections[self.symtab]
+    }
+
+    fn sym_strtab(&self) -> &Section {
+        &self.sections[self.sym_strtab]
+    }
+
+    fn sym_strtab_mut(&mut self) -> &mut Section {
+        &mut self.sections[self.sym_strtab]
     }
 
     fn add_section(&mut self, name: &str, fields: &HeaderFields, data: &[u8], endian: Endian) {
@@ -975,20 +967,12 @@ pub(crate) fn fixup_objfile(
     }
 
     // Merge strtab data.
-    let strtab_adj = {
-        let idx = objfile.symtab().strtab.unwrap();
-        let strtab = objfile.sections.get_mut(idx).unwrap();
-
-        let strtab_adj = strtab.data.len();
-        strtab.data.extend(
-            asm_objfile.sections[asm_objfile.symtab().strtab.unwrap()]
-                .data
-                .iter()
-                .cloned(),
-        );
-
-        strtab_adj
-    };
+    let strtab_adj;
+    {
+        let strtab = objfile.sym_strtab_mut();
+        strtab_adj = strtab.data.len();
+        strtab.data.extend(&asm_objfile.sym_strtab().data);
+    }
 
     // Find relocated symbols
     let mut relocated_symbols = vec![];
@@ -1082,10 +1066,8 @@ pub(crate) fn fixup_objfile(
     // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
     if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
         let mdebug_section = mdebug_section.unwrap();
-        let mut static_name_count: HashMap<String, usize> = HashMap::new();
-        let mut strtab_index = objfile.sections[objfile.symtab().strtab.unwrap()]
-            .data
-            .len();
+        let mut static_name_count: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut strtab_index = objfile.sym_strtab().data.len();
         let mut new_strtab_data = vec![];
 
         let read_u32 = |data: &[u8], offset| {
@@ -1120,26 +1102,25 @@ pub(crate) fn fixup_objfile(
                         .position(|x| *x == 0)
                         .unwrap()
                         + symbol_name_offset;
-                    let mut symbol_name = String::from_utf8_lossy(
-                        &objfile_data[symbol_name_offset..symbol_name_offset_end],
-                    )
-                    .into_owned();
+                    let mut symbol_name =
+                        objfile_data[symbol_name_offset..symbol_name_offset_end].to_owned();
                     if scope_level > 1 {
                         // For in-function statics, append an increasing counter to
                         // the name, to avoid duplicate conflicting symbols.
                         let count = static_name_count.get(&symbol_name).unwrap_or(&0) + 1;
                         static_name_count.insert(symbol_name.clone(), count);
-                        symbol_name = format!("{}:{}", symbol_name, count);
+                        symbol_name.extend(format!(":{}", count).as_bytes());
                     }
-                    let emitted_symbol_name =
-                        if convert_statics == SymbolVisibility::GlobalWithFilename {
-                            // Change the emitted symbol name to include the filename,
-                            // but don't let that affect deduplication logic (we still
-                            // want to be able to reference statics from GLOBAL_ASM).
-                            format!("{}:{}", objfile_path.to_string_lossy(), symbol_name)
-                        } else {
-                            symbol_name.clone()
-                        };
+                    let mut emitted_symbol_name = symbol_name.clone();
+                    if convert_statics == SymbolVisibility::GlobalWithFilename {
+                        // Change the emitted symbol name to include the filename,
+                        // but don't let that affect deduplication logic (we still
+                        // want to be able to reference statics from GLOBAL_ASM).
+                        let mut new_name = objfile_path.to_string_lossy().into_owned().into_bytes();
+                        new_name.push(b':');
+                        new_name.extend(emitted_symbol_name);
+                        emitted_symbol_name = new_name;
+                    };
                     let section_name = match sc {
                         1 => ".text",
                         2 => ".data",
@@ -1164,10 +1145,11 @@ pub(crate) fn fixup_objfile(
                         st_type: symtype,
                         st_visibility: STV_DEFAULT,
                         st_shndx: section.index,
-                        name: symbol_name.clone(),
+                        name: String::from_utf8_lossy(&symbol_name).to_string(), // TODO
                     };
                     strtab_index += emitted_symbol_name.len() + 1;
-                    new_strtab_data.push(emitted_symbol_name + "\0");
+                    new_strtab_data.extend(&emitted_symbol_name);
+                    new_strtab_data.push(b'\0');
                     new_syms.push(Rc::new(RefCell::new(sym)));
                 }
                 match st {
@@ -1189,12 +1171,7 @@ pub(crate) fn fixup_objfile(
             assert_eq!(scope_level, 0);
         }
 
-        {
-            let idx = objfile.symtab().strtab.unwrap();
-            let strtab = objfile.sections.get_mut(idx).unwrap();
-
-            strtab.data.extend(new_strtab_data.join("").as_bytes());
-        }
+        objfile.sym_strtab_mut().data.extend(new_strtab_data);
     }
 
     // Get rid of duplicate symbols, favoring ones that are not UNDEF.
