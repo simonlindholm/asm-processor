@@ -1029,36 +1029,13 @@ pub fn fixup_objfile(
     // Find relocated symbols
     let mut relocated_symbols = vec![];
     for sectype in INPUT_SECTION_NAMES.iter() {
-        // objfile
-        if let Some(sec) = objfile.find_section(sectype) {
-            for reltab_idx in &sec.relocated_by {
-                let reltab = &objfile.sections[*reltab_idx];
-                for rel in &reltab.relocations {
-                    relocated_symbols.push(
-                        objfile
-                            .symtab()
-                            .symbol_entries
-                            .get(rel.sym_index)
-                            .unwrap()
-                            .clone(),
-                    );
-                }
-            }
-        }
-
-        // asm_objfile
-        if let Some(sec) = asm_objfile.find_section(sectype) {
-            for reltab_idx in &sec.relocated_by {
-                let reltab = &asm_objfile.sections[*reltab_idx];
-                for rel in &reltab.relocations {
-                    relocated_symbols.push(
-                        asm_objfile
-                            .symtab()
-                            .symbol_entries
-                            .get(rel.sym_index)
-                            .unwrap()
-                            .clone(),
-                    );
+        for obj in [&objfile, &asm_objfile] {
+            if let Some(sec) = obj.find_section(sectype) {
+                for reltab_idx in &sec.relocated_by {
+                    let reltab = &obj.sections[*reltab_idx];
+                    for rel in &reltab.relocations {
+                        relocated_symbols.push(obj.symtab().symbol_entries[rel.sym_index].clone());
+                    }
                 }
             }
         }
