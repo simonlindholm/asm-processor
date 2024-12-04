@@ -1382,40 +1382,25 @@ pub(crate) fn fixup_objfile(
                     .flat_map(|x| x.to_bin(endian).unwrap())
                     .collect();
 
-                if reltab.header.sh_type == SHT_REL {
-                    if let Some(target_reltab) =
-                        objfile.find_section_mut(&format!(".rel{}", target_sectype))
-                    {
-                        target_reltab.data.extend(new_data);
-                    } else {
-                        objfile.add_section(
-                            &format!(".rel{}", target_sectype),
-                            &HeaderFields {
-                                sh_type: SHT_REL,
-                                sh_flags: 0,
-                                sh_link: objfile.symtab().index as u32,
-                                sh_info: target_index as u32,
-                                sh_addralign: 4,
-                                sh_entsize: 8,
-                            },
-                            &new_data,
-                            endian,
-                        );
-                    }
-                } else if let Some(target_reltaba) =
-                    objfile.find_section_mut(&format!(".rela{}", target_sectype))
-                {
-                    target_reltaba.data.extend(new_data);
+                let (prefix, sh_entsize) = if reltab.header.sh_type == SHT_REL {
+                    (".rel", 8)
+                } else {
+                    (".rela", 12)
+                };
+                let rel_section_name = format!("{}{}", prefix, target_sectype);
+
+                if let Some(target_reltab) = objfile.find_section_mut(&rel_section_name) {
+                    target_reltab.data.extend(new_data);
                 } else {
                     objfile.add_section(
-                        &format!(".rela{}", target_sectype),
+                        &rel_section_name,
                         &HeaderFields {
-                            sh_type: SHT_RELA,
+                            sh_type: reltab.header.sh_type,
                             sh_flags: 0,
                             sh_link: objfile.symtab().index as u32,
                             sh_info: target_index as u32,
                             sh_addralign: 4,
-                            sh_entsize: 12,
+                            sh_entsize,
                         },
                         &new_data,
                         endian,
