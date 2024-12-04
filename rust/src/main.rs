@@ -3,8 +3,7 @@ mod preprocess;
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
-    fmt::Debug,
+    fmt::{Debug, Display},
     fs::{self, File},
     io::{stdout, Write},
     path::{Path, PathBuf},
@@ -14,9 +13,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use enum_map::{Enum, EnumMap};
+use temp_dir::TempDir;
+
 use postprocess::fixup_objfile;
 use preprocess::parse_source;
-use temp_dir::TempDir;
 
 #[derive(Clone, Debug)]
 enum Encoding {
@@ -238,6 +239,31 @@ struct AsmProcArgs {
     pascal: bool,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
+enum OutputSection {
+    Text,
+    Data,
+    Rodata,
+    Bss,
+}
+
+impl OutputSection {
+    fn as_str(&self) -> &'static str {
+        match self {
+            OutputSection::Text => ".text",
+            OutputSection::Data => ".data",
+            OutputSection::Rodata => ".rodata",
+            OutputSection::Bss => ".bss",
+        }
+    }
+}
+
+impl Display for OutputSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Function {
     text_glabels: Vec<String>,
@@ -246,7 +272,7 @@ struct Function {
     jtbl_rodata_size: usize,
     late_rodata_asm_conts: Vec<String>,
     fn_desc: String,
-    data: HashMap<String, (Option<String>, usize)>,
+    data: EnumMap<OutputSection, (Option<String>, usize)>,
 }
 
 #[derive(Default)]

@@ -12,9 +12,10 @@ use std::{
 
 use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
 use encoding_rs::WINDOWS_1252;
+use enum_map::EnumMap;
 use temp_dir::TempDir;
 
-use crate::{Encoding, Function, SymbolVisibility};
+use crate::{Encoding, Function, OutputSection, SymbolVisibility};
 
 const EI_NIDENT: usize = 16;
 const EI_CLASS: usize = 4;
@@ -681,20 +682,21 @@ pub fn fixup_objfile(
     drop_mdebug_gptab: bool,
     convert_statics: SymbolVisibility,
 ) -> Result<()> {
-    const SECTIONS: [&str; 4] = [".data", ".text", ".rodata", ".bss"];
+    const OUTPUT_SECTIONS: [OutputSection; 4] = [
+        OutputSection::Data,
+        OutputSection::Text,
+        OutputSection::Rodata,
+        OutputSection::Bss,
+    ];
+    const INPUT_SECTION_NAMES: [&str; 5] = [".data", ".text", ".rodata", ".bss", ".late_rodata"];
 
     let objfile_data = fs::read(objfile_path)?;
     let mut objfile = ElfFile::new(&objfile_data)?;
     let endian = objfile.endian;
 
-    let mut prev_locs = HashMap::from([(".text", 0), (".data", 0), (".rodata", 0), (".bss", 0)]);
+    let mut prev_locs: EnumMap<OutputSection, usize> = EnumMap::default();
 
-    let mut to_copy: HashMap<&str, Vec<ToCopyData>> = HashMap::from([
-        (".text", vec![]),
-        (".data", vec![]),
-        (".rodata", vec![]),
-        (".bss", vec![]),
-    ]);
+    let mut to_copy: EnumMap<OutputSection, Vec<ToCopyData>> = EnumMap::default();
 
     let mut asm: Vec<String> = vec![];
     let mut all_late_rodata_dummy_bytes: Vec<Vec<[u8; 4]>> = vec![];
@@ -725,8 +727,8 @@ pub fn fixup_objfile(
                 break;
             }
             let loc = loc.unwrap().1;
-            let prev_loc = prev_locs.get(sectype.as_str()).unwrap();
-            if loc < *prev_loc {
+            let prev_loc = prev_locs[sectype];
+            if loc < prev_loc {
                 // If the dummy C generates too little asm, and we have two
                 // consecutive GLOBAL_ASM blocks, we detect that error here.
                 // On the other hand, if it generates too much, we don't have
@@ -738,26 +740,26 @@ pub fn fixup_objfile(
                     prev_loc - loc
                 );
             }
-            if loc != *prev_loc {
+            if loc != prev_loc {
                 asm.push(format!(".section {}", sectype));
-                if sectype == ".text" {
-                    for _ in 0..((loc - *prev_loc) / 4) {
+                if sectype == OutputSection::Text {
+                    for _ in 0..((loc - prev_loc) / 4) {
                         asm.push("nop".to_owned());
                     }
                 } else {
-                    asm.push(format!(".space {}", loc - *prev_loc));
+                    asm.push(format!(".space {}", loc - prev_loc));
                 }
             }
-            to_copy.get_mut(sectype.as_str()).unwrap().push(ToCopyData {
+            to_copy[sectype].push(ToCopyData {
                 loc,
                 size: *size,
                 temp_name: temp_name.to_string(),
                 fn_desc: function.fn_desc.clone(),
             });
-            if !function.text_glabels.is_empty() && sectype == ".text" {
+            if !function.text_glabels.is_empty() && sectype == OutputSection::Text {
                 func_sizes.insert(function.text_glabels.first().unwrap().to_string(), *size);
             }
-            *prev_locs.get_mut(sectype.as_str()).unwrap() = loc + *size;
+            prev_locs[sectype] = loc + *size;
         }
 
         if !ifdefed {
@@ -863,11 +865,11 @@ pub fn fixup_objfile(
     let mut modified_text_positions = HashSet::new();
     let mut jtbl_rodata_positions: HashSet<usize> = HashSet::new();
     let mut last_rodata_pos = 0;
-    for sectype in SECTIONS {
-        if !to_copy.contains_key(sectype) || to_copy.get(sectype).unwrap().is_empty() {
+    for sectype in OUTPUT_SECTIONS {
+        if to_copy[sectype].is_empty() {
             continue;
         }
-        let source = asm_objfile.find_section(sectype);
+        let source = asm_objfile.find_section(sectype.as_str());
         let Some(source) = source else {
             panic!("didn't find source section: {}", sectype);
         };
@@ -876,7 +878,7 @@ pub fn fixup_objfile(
             size,
             ref temp_name,
             ref fn_desc,
-        } in to_copy.get(sectype).unwrap().iter()
+        } in to_copy[sectype].iter()
         {
             let loc1 = asm_objfile
                 .symtab()
@@ -901,23 +903,23 @@ pub fn fixup_objfile(
             }
         }
 
-        if sectype == ".bss" {
+        if sectype == OutputSection::Bss {
             continue;
         }
 
-        let mut target = objfile.find_section_mut(sectype);
+        let mut target = objfile.find_section_mut(sectype.as_str());
         assert!(target.is_some());
         let mut data = target.as_ref().unwrap().data.clone();
-        for &ToCopyData { loc, size, .. } in to_copy.get(sectype).unwrap().iter() {
+        for &ToCopyData { loc, size, .. } in to_copy[sectype].iter() {
             data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
 
-            if sectype == ".text" {
+            if sectype == OutputSection::Text {
                 assert_eq!(size % 4, 0);
                 assert_eq!(loc % 4, 0);
                 for j in 0..size / 4 {
                     modified_text_positions.insert(loc + 4 * j);
                 }
-            } else if sectype == ".rodata" {
+            } else if sectype == OutputSection::Rodata {
                 last_rodata_pos = loc + size;
             }
         }
@@ -1026,7 +1028,7 @@ pub fn fixup_objfile(
 
     // Find relocated symbols
     let mut relocated_symbols = vec![];
-    for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
+    for sectype in INPUT_SECTION_NAMES.iter() {
         // objfile
         if let Some(sec) = objfile.find_section(sectype) {
             for reltab_idx in &sec.relocated_by {
@@ -1092,7 +1094,7 @@ pub fn fixup_objfile(
             let mut target_section_name = section_name.clone();
             if section_name == ".late_rodata" {
                 target_section_name = ".rodata".to_string();
-            } else if !SECTIONS.contains(&section_name.as_str()) {
+            } else if !INPUT_SECTION_NAMES.contains(&section_name.as_str()) {
                 return Err(anyhow::anyhow!("generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found {}", section_name));
             }
             let objfile_section = objfile.find_section(&target_section_name);
@@ -1335,8 +1337,8 @@ pub fn fixup_objfile(
     objfile.symtab_mut().header.sh_info = num_local_syms as u32;
 
     // Fix up relocation symbol references
-    for sectype in SECTIONS {
-        let target = objfile.find_section(sectype).cloned();
+    for sectype in OUTPUT_SECTIONS {
+        let target = objfile.find_section(sectype.as_str()).cloned();
 
         if let Some(target) = target {
             let symbol_entries = objfile.symtab().symbol_entries.clone();
@@ -1347,8 +1349,10 @@ pub fn fixup_objfile(
                 let mut nrels = vec![];
                 for rel in reltab.relocations.iter() {
                     let mut rel = rel.clone();
-                    if sectype == ".text" && modified_text_positions.contains(&rel.r_offset)
-                        || sectype == ".rodata" && jtbl_rodata_positions.contains(&rel.r_offset)
+                    if (sectype == OutputSection::Text
+                        && modified_text_positions.contains(&rel.r_offset))
+                        || (sectype == OutputSection::Rodata
+                            && jtbl_rodata_positions.contains(&rel.r_offset))
                     {
                         // don't include relocations for late_rodata dummy code
                         continue;
@@ -1366,7 +1370,7 @@ pub fn fixup_objfile(
     }
 
     // Move over relocations
-    for sectype in SECTIONS.iter().chain([".late_rodata"].iter()) {
+    for sectype in INPUT_SECTION_NAMES.iter() {
         if let Some(source) = asm_objfile.find_section(sectype) {
             if source.data.is_empty() {
                 continue;
