@@ -1440,28 +1440,20 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             target_sectype = '.rodata' if sectype == '.late_rodata' else sectype
             target = objfile.find_section(target_sectype)
             assert target is not None, target_sectype
-            target_reltab = objfile.find_section('.rel' + target_sectype)
-            target_reltaba = objfile.find_section('.rela' + target_sectype)
             for reltab in source.relocated_by:
                 for rel in reltab.relocations:
                     rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
                     if sectype == '.late_rodata':
                         rel.r_offset = moved_late_rodata[rel.r_offset]
                 new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
-                if reltab.sh_type == SHT_REL:
-                    if not target_reltab:
-                        target_reltab = objfile.add_section('.rel' + target_sectype,
-                                sh_type=SHT_REL, sh_flags=0,
-                                sh_link=objfile.symtab.index, sh_info=target.index,
-                                sh_addralign=4, sh_entsize=8, data=b'')
-                    target_reltab.data += new_data
-                else:
-                    if not target_reltaba:
-                        target_reltaba = objfile.add_section('.rela' + target_sectype,
-                                sh_type=SHT_RELA, sh_flags=0,
-                                sh_link=objfile.symtab.index, sh_info=target.index,
-                                sh_addralign=4, sh_entsize=12, data=b'')
-                    target_reltaba.data += new_data
+                prefix, sh_entsize = ('.rel', 8) if reltab.sh_type == SHT_REL else ('.rela', 12)
+                target_reltab = objfile.find_section(prefix + target_sectype)
+                if not target_reltab:
+                    target_reltab = objfile.add_section(prefix + target_sectype,
+                            sh_type=reltab.sh_type, sh_flags=0,
+                            sh_link=objfile.symtab.index, sh_info=target.index,
+                            sh_addralign=4, sh_entsize=sh_entsize, data=b'')
+                target_reltab.data += new_data
 
         objfile.write(objfile_name)
     finally:
