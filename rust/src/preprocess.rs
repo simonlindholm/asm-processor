@@ -29,7 +29,7 @@ impl InputSection {
 }
 
 #[derive(Clone, Debug)]
-pub struct GlobalAsmBlock {
+struct GlobalAsmBlock {
     fn_desc: String,
     cur_section: InputSection,
     asm_conts: Vec<String>,
@@ -44,7 +44,7 @@ pub struct GlobalAsmBlock {
 }
 
 impl GlobalAsmBlock {
-    pub fn new(fn_desc: String) -> Self {
+    fn new(fn_desc: String) -> Self {
         Self {
             fn_desc,
             cur_section: InputSection::Text,
@@ -181,7 +181,7 @@ impl GlobalAsmBlock {
         Ok(())
     }
 
-    pub fn process_line(&mut self, line: &str, output_enc: &Encoding) -> Result<()> {
+    fn process_line(&mut self, line: &str, output_enc: &Encoding) -> Result<()> {
         self.num_lines += 1;
         if let Some(stripped) = line.strip_suffix("\\") {
             self.glued_line = format!("{}{}", self.glued_line, stripped);
@@ -376,7 +376,7 @@ impl GlobalAsmBlock {
 
     const MAX_FN_SIZE: usize = 100;
 
-    pub fn finish(&self, state: &mut GlobalState) -> Result<(Vec<String>, Function)> {
+    fn finish(&self, state: &mut GlobalState) -> Result<(Vec<String>, Function)> {
         let mut src = vec!["".to_owned(); self.num_lines + 1];
         let mut late_rodata_dummy_bytes = vec![];
         let mut jtbl_rodata_size = 0;

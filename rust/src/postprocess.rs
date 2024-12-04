@@ -113,15 +113,15 @@ struct SymbolData {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Symbol {
-    pub st_name: usize,
-    pub st_value: usize,
-    pub st_size: usize,
-    pub st_shndx: usize,
-    pub st_type: u8,
-    pub st_bind: u8,
-    pub st_visibility: u8,
-    pub name: String,
+struct Symbol {
+    st_name: usize,
+    st_value: usize,
+    st_size: usize,
+    st_shndx: usize,
+    st_type: u8,
+    st_bind: u8,
+    st_visibility: u8,
+    name: String,
 }
 
 impl Symbol {
@@ -154,7 +154,7 @@ impl Symbol {
         })
     }
 
-    pub fn to_bin(&self) -> Vec<u8> {
+    fn to_bin(&self) -> Vec<u8> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
 
@@ -173,7 +173,7 @@ impl Symbol {
 }
 
 #[derive(Clone)]
-pub(crate) struct Relocation {
+struct Relocation {
     r_offset: usize,
     sym_index: usize,
     rel_type: u32,
@@ -203,7 +203,7 @@ impl Relocation {
         })
     }
 
-    pub fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
+    fn to_bin(&self, endian: Endian) -> BinResult<Vec<u8>> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
         let r_offset = self.r_offset as u32;
@@ -250,15 +250,15 @@ impl Hdrr {
 
 #[binrw]
 #[derive(Clone)]
-pub(crate) struct SectionHeader {
+struct SectionHeader {
     sh_name: u32,
-    pub sh_type: u32,
+    sh_type: u32,
     sh_flags: u32,
     sh_addr: u32,
     sh_offset: u32,
     sh_size: u32,
     sh_link: u32,
-    pub sh_info: u32,
+    sh_info: u32,
     sh_addralign: u32,
     sh_entsize: u32,
 }
@@ -268,16 +268,16 @@ impl SectionHeader {
 }
 
 #[derive(Clone)]
-pub(crate) struct Section {
-    pub header: SectionHeader,
-    pub data: Vec<u8>,
-    pub index: usize,
-    pub relocated_by: Vec<usize>,
+struct Section {
+    header: SectionHeader,
+    data: Vec<u8>,
+    index: usize,
+    relocated_by: Vec<usize>,
     rel_target: Option<usize>,
-    pub symbol_entries: Vec<Rc<RefCell<Symbol>>>,
-    pub relocations: Vec<Relocation>,
-    pub name: Option<String>,
-    pub strtab: Option<usize>,
+    symbol_entries: Vec<Rc<RefCell<Symbol>>>,
+    relocations: Vec<Relocation>,
+    name: Option<String>,
+    strtab: Option<usize>,
 }
 
 impl Section {
@@ -383,7 +383,7 @@ impl Section {
         }
     }
 
-    pub fn find_symbol(&self, name: &str) -> Option<(usize, usize)> {
+    fn find_symbol(&self, name: &str) -> Option<(usize, usize)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
             if s.borrow().name == name {
@@ -393,7 +393,7 @@ impl Section {
         None
     }
 
-    pub fn find_symbol_in_section(&self, name: &str, section: &Section) -> Option<usize> {
+    fn find_symbol_in_section(&self, name: &str, section: &Section) -> Option<usize> {
         let (st_shndx, st_value) = self.find_symbol(name)?;
         assert_eq!(st_shndx, section.index);
         Some(st_value)
@@ -481,16 +481,15 @@ impl Section {
     }
 }
 
-pub struct ElfFile {
-    pub data: Vec<u8>,
-    pub endian: Endian,
+struct ElfFile {
+    data: Vec<u8>,
+    endian: Endian,
     header: ElfHeader,
-    pub sections: Vec<Section>,
+    sections: Vec<Section>,
     symtab: usize,
 }
 
-// satisfy clippy
-pub(crate) struct HeaderFields {
+struct HeaderFields {
     sh_type: u32,
     sh_flags: u32,
     sh_link: u32,
@@ -499,13 +498,13 @@ pub(crate) struct HeaderFields {
     sh_entsize: u32,
 }
 
-pub struct SymPair {
+struct SymPair {
     sym1: Rc<RefCell<Symbol>>,
     sym2: Rc<RefCell<Symbol>>,
 }
 
 impl ElfFile {
-    pub fn new(data: &[u8]) -> BinResult<Self> {
+    fn new(data: &[u8]) -> BinResult<Self> {
         let data = data.to_vec();
         assert_eq!(data[..4], [0x7f, b'E', b'L', b'F']);
 
@@ -572,27 +571,27 @@ impl ElfFile {
         })
     }
 
-    pub fn find_section(&self, name: &str) -> Option<&Section> {
+    fn find_section(&self, name: &str) -> Option<&Section> {
         self.sections
             .iter()
             .find(|s| s.name.as_ref().unwrap() == name)
     }
 
-    pub fn find_section_mut(&mut self, name: &str) -> Option<&mut Section> {
+    fn find_section_mut(&mut self, name: &str) -> Option<&mut Section> {
         self.sections
             .iter_mut()
             .find(|s| s.name.as_ref().unwrap() == name)
     }
 
-    pub fn symtab(&self) -> &Section {
+    fn symtab(&self) -> &Section {
         self.sections.get(self.symtab).unwrap()
     }
 
-    pub fn symtab_mut(&mut self) -> &mut Section {
+    fn symtab_mut(&mut self) -> &mut Section {
         self.sections.get_mut(self.symtab).unwrap()
     }
 
-    pub fn add_section(
+    fn add_section(
         &mut self,
         name: &str,
         fields: &HeaderFields,
@@ -613,7 +612,7 @@ impl ElfFile {
         self.sections.last().unwrap()
     }
 
-    pub fn drop_mdebug_gptab(&mut self) {
+    fn drop_mdebug_gptab(&mut self) {
         // We can only drop sections at the end, since otherwise section
         // references might be wrong. Luckily, these sections typically are.
         while self.sections.last().unwrap().header.sh_type == SHT_MIPS_DEBUG
@@ -634,7 +633,7 @@ impl ElfFile {
         }
     }
 
-    pub fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
+    fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
         self.header.e_shnum = self.sections.len() as u16;
         writer
             .write_all(&self.header.to_bin(self.endian).unwrap())
@@ -678,7 +677,7 @@ struct ToCopyData {
     fn_desc: String,
 }
 
-pub fn fixup_objfile(
+pub(crate) fn fixup_objfile(
     objfile_path: &PathBuf,
     functions: &[Function],
     asm_prelude: &str,
