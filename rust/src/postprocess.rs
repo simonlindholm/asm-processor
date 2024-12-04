@@ -21,9 +21,9 @@ const EI_NIDENT: usize = 16;
 const EI_CLASS: usize = 4;
 const EI_DATA: usize = 5;
 
-const SHN_UNDEF: u16 = 0;
-const SHN_ABS: u16 = 0xfff1;
-const SHN_XINDEX: u16 = 0xffff;
+const SHN_UNDEF: usize = 0;
+const SHN_ABS: usize = 0xfff1;
+const SHN_XINDEX: usize = 0xffff;
 
 const STT_OBJECT: u8 = 1;
 const STT_FUNC: u8 = 2;
@@ -44,15 +44,15 @@ const SHT_MIPS_DEBUG: u32 = 0x70000005;
 
 const SHF_LINK_ORDER: u32 = 0x80;
 
-const MIPS_DEBUG_ST_STATIC: u32 = 2;
-const MIPS_DEBUG_ST_PROC: u32 = 6;
-const MIPS_DEBUG_ST_BLOCK: u32 = 7;
-const MIPS_DEBUG_ST_END: u32 = 8;
-const MIPS_DEBUG_ST_FILE: u32 = 11;
-const MIPS_DEBUG_ST_STATIC_PROC: u32 = 14;
-const MIPS_DEBUG_ST_STRUCT: u32 = 26;
-const MIPS_DEBUG_ST_UNION: u32 = 27;
-const MIPS_DEBUG_ST_ENUM: u32 = 28;
+const MIPS_DEBUG_ST_STATIC: usize = 2;
+const MIPS_DEBUG_ST_PROC: usize = 6;
+const MIPS_DEBUG_ST_BLOCK: usize = 7;
+const MIPS_DEBUG_ST_END: usize = 8;
+const MIPS_DEBUG_ST_FILE: usize = 11;
+const MIPS_DEBUG_ST_STATIC_PROC: usize = 14;
+const MIPS_DEBUG_ST_STRUCT: usize = 26;
+const MIPS_DEBUG_ST_UNION: usize = 27;
+const MIPS_DEBUG_ST_ENUM: usize = 28;
 
 #[binrw]
 struct ElfHeader {
@@ -80,12 +80,15 @@ impl ElfHeader {
 
         let header = Self::read_options(&mut cursor, endian, ())?;
 
-        assert_eq!(header.e_ident[EI_CLASS], 1);
-        assert_eq!(header.e_type, 1); // relocatable
-        assert_eq!(header.e_machine, 8); // MIPS I Architecture
-        assert_eq!(header.e_phoff, 0); // no program header
-        assert_ne!(header.e_shoff, 0); // section header
-        assert_ne!(header.e_shstrndx, SHN_UNDEF);
+        assert_eq!(header.e_ident[EI_CLASS], 1, "ELF must be 32-bit");
+        assert_eq!(header.e_type, 1, "ELF must be relocatable");
+        assert_eq!(header.e_machine, 8, "ELF must be MIPS 1");
+        assert_eq!(header.e_phoff, 0, "ELF must not have program headers");
+        assert_ne!(header.e_shoff, 0, "ELF must have section headers");
+        assert_ne!(
+            header.e_shstrndx, SHN_UNDEF as u16,
+            "ELF must have a section header string table"
+        );
 
         Ok(header)
     }
@@ -100,22 +103,25 @@ impl ElfHeader {
 }
 
 #[binrw]
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SymbolData {
-    pub st_name: u32,
-    pub st_value: u32,
-    pub st_size: u32,
+struct SymbolData {
+    st_name: u32,
+    st_value: u32,
+    st_size: u32,
     st_info: u8,
     st_other: u8,
-    pub st_shndx: u16,
+    st_shndx: u16,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Symbol {
-    pub data: SymbolData,
-    pub bind: u8,
+    pub st_name: usize,
+    pub st_value: usize,
+    pub st_size: usize,
+    pub st_shndx: usize,
+    pub st_type: u8,
+    pub st_bind: u8,
+    pub st_visibility: u8,
     pub name: String,
-    visibility: u8,
 }
 
 impl Symbol {
@@ -128,38 +134,40 @@ impl Symbol {
         let mut cursor = Cursor::new(data);
 
         let data = SymbolData::read_options(&mut cursor, endian, ())?;
-        assert_ne!(data.st_shndx, SHN_XINDEX);
-        let bind = data.st_info >> 4;
+        if data.st_shndx == SHN_XINDEX as u16 {
+            panic!("too many sections (SHN_XINDEX not supported)");
+        }
+        let st_type = data.st_info & 0xf;
+        let st_bind = data.st_info >> 4;
+        let st_visibility = data.st_other & 0x3;
         let name = name.unwrap_or_else(|| strtab.unwrap().lookup_str(data.st_name as usize));
-        let visibility = data.st_other & 0x3;
 
         Ok(Self {
-            data,
-            bind,
+            st_name: data.st_name as usize,
+            st_value: data.st_value as usize,
+            st_size: data.st_size as usize,
+            st_shndx: data.st_shndx as usize,
+            st_type,
+            st_bind,
+            st_visibility,
             name,
-            visibility,
         })
-    }
-
-    pub fn from_parts(header: SymbolData, name: &str, endian: Endian) -> BinResult<Self> {
-        let mut rv = [0; 16];
-        let mut cursor = Cursor::new(rv.as_mut_slice());
-        header.write_options(&mut cursor, endian, ())?;
-
-        Symbol::new(&rv, None, Some(name.to_string()), endian)
-    }
-
-    pub fn set_type(&mut self, typ: u8) {
-        self.data.st_info = (self.bind << 4) | typ;
     }
 
     pub fn to_bin(&self) -> Vec<u8> {
         let mut rv = vec![];
         let mut cursor = Cursor::new(&mut rv);
 
-        self.data
-            .write_options(&mut cursor, Endian::Big, ())
-            .unwrap();
+        SymbolData {
+            st_name: self.st_name as u32,
+            st_value: self.st_value as u32,
+            st_size: self.st_size as u32,
+            st_info: self.st_bind << 4 | self.st_type,
+            st_other: self.st_visibility,
+            st_shndx: self.st_shndx as u16,
+        }
+        .write_options(&mut cursor, Endian::Big, ())
+        .unwrap();
         rv
     }
 }
@@ -379,10 +387,7 @@ impl Section {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
             if s.borrow().name == name {
-                return Some((
-                    s.borrow().data.st_shndx as usize,
-                    s.borrow().data.st_value as usize,
-                ));
+                return Some((s.borrow().st_shndx, s.borrow().st_value));
             }
         }
         None
@@ -1029,13 +1034,12 @@ pub fn fixup_objfile(
     // Find relocated symbols
     let mut relocated_symbols = vec![];
     for sectype in INPUT_SECTION_NAMES.iter() {
-        for obj in [&objfile, &asm_objfile] {
-            if let Some(sec) = obj.find_section(sectype) {
-                for reltab_idx in &sec.relocated_by {
-                    let reltab = &obj.sections[*reltab_idx];
-                    for rel in &reltab.relocations {
-                        relocated_symbols.push(obj.symtab().symbol_entries[rel.sym_index].clone());
-                    }
+        if let Some(sec) = asm_objfile.find_section(sectype) {
+            for reltab_idx in &sec.relocated_by {
+                let reltab = &asm_objfile.sections[*reltab_idx];
+                for rel in &reltab.relocations {
+                    relocated_symbols
+                        .push(asm_objfile.symtab().symbol_entries[rel.sym_index].clone());
                 }
             }
         }
@@ -1063,8 +1067,8 @@ pub fn fixup_objfile(
             assert!(!relocated_symbols.contains(s));
             continue;
         }
-        if s.borrow().data.st_shndx != SHN_UNDEF && s.borrow().data.st_shndx != SHN_ABS {
-            let section_name = asm_objfile.sections[s.borrow().data.st_shndx as usize]
+        if s.borrow().st_shndx != SHN_UNDEF && s.borrow().st_shndx != SHN_ABS {
+            let section_name = asm_objfile.sections[s.borrow().st_shndx]
                 .name
                 .clone()
                 .unwrap();
@@ -1081,17 +1085,17 @@ pub fn fixup_objfile(
                     target_section_name
                 ));
             }
-            s.borrow_mut().data.st_shndx = objfile_section.unwrap().index as u16;
+            s.borrow_mut().st_shndx = objfile_section.unwrap().index;
             // glabels aren't marked as functions, making objdump output confusing. Fix that.
             if all_text_glabels.contains(s.borrow().name.as_str()) {
-                s.borrow_mut().set_type(STT_FUNC);
+                s.borrow_mut().st_type = STT_FUNC;
                 if func_sizes.contains_key(s.borrow().name.as_str()) {
-                    let size: u32 = func_sizes[s.borrow().name.as_str()] as u32;
-                    s.borrow_mut().data.st_size = size;
+                    let size = func_sizes[s.borrow().name.as_str()];
+                    s.borrow_mut().st_size = size;
                 }
             }
             if section_name == ".late_rodata" {
-                if s.borrow().data.st_value == 0 {
+                if s.borrow().st_value == 0 {
                     // This must be a symbol corresponding to the whole .late_rodata
                     // section, being referred to from a relocation.
                     // Moving local symbols is tricky, because it requires fixing up
@@ -1101,11 +1105,11 @@ pub fn fixup_objfile(
                         "local symbols in .late_rodata are not allowed"
                     ));
                 }
-                let st_val = s.borrow().data.st_value as usize;
-                s.borrow_mut().data.st_value = moved_late_rodata[&st_val] as u32;
+                let st_val = s.borrow().st_value;
+                s.borrow_mut().st_value = moved_late_rodata[&st_val];
             }
         }
-        s.borrow_mut().data.st_name += strtab_adj as u32;
+        s.borrow_mut().st_name += strtab_adj;
         new_syms.push(s.clone());
     }
 
@@ -1119,30 +1123,31 @@ pub fn fixup_objfile(
     // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
     if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
         let mdebug_section = mdebug_section.unwrap();
-        let mut static_name_count = HashMap::new();
+        let mut static_name_count: HashMap<String, usize> = HashMap::new();
         let mut strtab_index = objfile.sections[objfile.symtab().strtab.unwrap()]
             .data
             .len();
         let mut new_strtab_data = vec![];
 
-        let read_u32 =
-            |data: &[u8], offset| u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+        let read_u32 = |data: &[u8], offset| {
+            u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize
+        };
 
-        let ifd_max = read_u32(&mdebug_section.data, 18 * 4) as usize;
-        let cb_fd_offset = read_u32(&mdebug_section.data, 19 * 4) as usize;
-        let cb_sym_offset = read_u32(&mdebug_section.data, 9 * 4) as usize;
-        let cb_ss_offset = read_u32(&mdebug_section.data, 15 * 4) as usize;
+        let ifd_max = read_u32(&mdebug_section.data, 18 * 4);
+        let cb_fd_offset = read_u32(&mdebug_section.data, 19 * 4);
+        let cb_sym_offset = read_u32(&mdebug_section.data, 9 * 4);
+        let cb_ss_offset = read_u32(&mdebug_section.data, 15 * 4);
 
         for i in 0..ifd_max {
             let offset = cb_fd_offset + 18 * 4 * i;
-            let iss_base = read_u32(&objfile.data, offset + 2 * 4) as usize;
-            let isym_base = read_u32(&objfile.data, offset + 4 * 4) as usize;
-            let csym = read_u32(&objfile.data, offset + 5 * 4) as usize;
+            let iss_base = read_u32(&objfile.data, offset + 2 * 4);
+            let isym_base = read_u32(&objfile.data, offset + 4 * 4);
+            let csym = read_u32(&objfile.data, offset + 5 * 4);
             let mut scope_level = 0;
 
             for j in 0..csym {
                 let offset2 = cb_sym_offset + 12 * (isym_base + j);
-                let iss = read_u32(&objfile.data, offset2) as usize;
+                let iss = read_u32(&objfile.data, offset2);
                 let value = read_u32(&objfile.data, offset2 + 4);
                 let st_sc_index = read_u32(&objfile.data, offset2 + 8);
                 let st = st_sc_index >> 26;
@@ -1185,25 +1190,23 @@ pub fn fixup_objfile(
                             return Err(anyhow::anyhow!("unsupported MIPS_DEBUG_SC value: {}", sc));
                         }
                     };
-                    let section = objfile.find_section(section_name);
+                    let section = objfile.find_section(section_name).unwrap();
                     let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
                     let binding = if make_statics_global {
                         STB_GLOBAL
                     } else {
                         STB_LOCAL
                     };
-                    let sym = Symbol::from_parts(
-                        SymbolData {
-                            st_name: strtab_index as u32,
-                            st_value: value,
-                            st_size: 0,
-                            st_info: ((binding as u32) << 4 | symtype as u32) as u8,
-                            st_other: STV_DEFAULT,
-                            st_shndx: section.unwrap().index as u16,
-                        },
-                        symbol_name.as_str(),
-                        endian,
-                    )?;
+                    let sym = Symbol {
+                        st_name: strtab_index,
+                        st_value: value,
+                        st_size: 0,
+                        st_bind: binding,
+                        st_type: symtype,
+                        st_visibility: STV_DEFAULT,
+                        st_shndx: section.index,
+                        name: symbol_name.clone(),
+                    };
                     strtab_index += emitted_symbol_name.len() + 1;
                     new_strtab_data.push(emitted_symbol_name + "\0");
                     new_syms.push(Rc::new(RefCell::new(sym)));
@@ -1238,7 +1241,7 @@ pub fn fixup_objfile(
     // Get rid of duplicate symbols, favoring ones that are not UNDEF.
     // Skip this for unnamed local symbols though.
     new_syms.sort_by(|a, b| {
-        if a.borrow().data.st_shndx != SHN_UNDEF && b.borrow().data.st_shndx == SHN_UNDEF {
+        if a.borrow().st_shndx != SHN_UNDEF && b.borrow().st_shndx == SHN_UNDEF {
             Ordering::Less
         } else {
             Ordering::Greater
@@ -1249,16 +1252,16 @@ pub fn fixup_objfile(
     let mut name_to_sym = HashMap::new();
     for s in new_syms.iter_mut() {
         if s.borrow().name == "_gp_disp" {
-            s.borrow_mut().set_type(STT_OBJECT);
+            s.borrow_mut().st_type = STT_OBJECT;
         }
-        if s.borrow().bind == STB_LOCAL && s.borrow().data.st_shndx == SHN_UNDEF {
+        if s.borrow().st_bind == STB_LOCAL && s.borrow().st_shndx == SHN_UNDEF {
             return Err(anyhow::anyhow!(
                 "local symbol \"{}\" is undefined",
                 s.borrow().name
             ));
         }
         if s.borrow().name.is_empty() {
-            if s.borrow().bind != STB_LOCAL {
+            if s.borrow().st_bind != STB_LOCAL {
                 return Err(anyhow::anyhow!("global symbol with no name"));
             }
             newer_syms.push(s.clone());
@@ -1269,9 +1272,9 @@ pub fn fixup_objfile(
                 newer_syms.push(s.clone());
             } else {
                 let existing = existing.unwrap();
-                if s.borrow().data.st_shndx != SHN_UNDEF
-                    && !(existing.borrow().data.st_shndx == s.borrow().data.st_shndx
-                        && existing.borrow().data.st_value == s.borrow().data.st_value)
+                if s.borrow().st_shndx != SHN_UNDEF
+                    && !(existing.borrow().st_shndx == s.borrow().st_shndx
+                        && existing.borrow().st_value == s.borrow().st_value)
                 {
                     return Err(anyhow::anyhow!(
                         "symbol \"{}\" defined twice",
@@ -1291,14 +1294,19 @@ pub fn fixup_objfile(
     // Put local symbols in front, with the initial dummy entry first, and
     // _gp_disp at the end if it exists.
     new_syms.insert(0, empty_symbol.clone());
-    new_syms.sort_by_key(|a| (a.borrow().bind != STB_LOCAL, a.borrow().name == "_gp_disp"));
+    new_syms.sort_by_key(|a| {
+        (
+            a.borrow().st_bind != STB_LOCAL,
+            a.borrow().name == "_gp_disp",
+        )
+    });
 
     let num_local_syms = new_syms
         .iter()
-        .filter(|x| x.borrow().bind == STB_LOCAL)
+        .filter(|x| x.borrow().st_bind == STB_LOCAL)
         .count();
     let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
-    let mut new_index = HashMap::new();
+    let mut new_index: HashMap<String, usize> = HashMap::new();
 
     for (i, s) in new_syms.iter().enumerate() {
         new_index.insert(s.borrow().name.clone(), i);
@@ -1358,7 +1366,7 @@ pub fn fixup_objfile(
             } else {
                 sectype
             };
-            let target_index = objfile.find_section(target_sectype).unwrap().index as u32;
+            let target_index = objfile.find_section(target_sectype).unwrap().index;
             for reltab in &source.relocated_by {
                 let reltab = &mut asm_objfile.sections[*reltab].clone();
                 for rel in &mut reltab.relocations {
@@ -1387,7 +1395,7 @@ pub fn fixup_objfile(
                                 sh_type: SHT_REL,
                                 sh_flags: 0,
                                 sh_link: objfile.symtab().index as u32,
-                                sh_info: target_index,
+                                sh_info: target_index as u32,
                                 sh_addralign: 4,
                                 sh_entsize: 8,
                             },
@@ -1406,7 +1414,7 @@ pub fn fixup_objfile(
                             sh_type: SHT_REL,
                             sh_flags: 0,
                             sh_link: objfile.symtab().index as u32,
-                            sh_info: target_index,
+                            sh_info: target_index as u32,
                             sh_addralign: 4,
                             sh_entsize: 8,
                         },

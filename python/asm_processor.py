@@ -157,10 +157,10 @@ class Symbol:
         self.fmt = fmt
         self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx = fmt.unpack('IIIBBH', data)
         assert self.st_shndx != SHN_XINDEX, "too many sections (SHN_XINDEX not supported)"
-        self.bind = st_info >> 4
-        self.type = st_info & 15
+        self.st_bind = st_info >> 4
+        self.st_type = st_info & 0xf
         self.name = name if name is not None else strtab.lookup_str(self.st_name)
-        self.visibility = self.st_other & 3
+        self.st_visibility = self.st_other & 3
 
     @staticmethod
     def from_parts(fmt, st_name, st_value, st_size, st_info, st_other, st_shndx, strtab, name):
@@ -168,7 +168,7 @@ class Symbol:
         return Symbol(fmt, header, strtab, name)
 
     def to_bin(self):
-        st_info = (self.bind << 4) | self.type
+        st_info = (self.st_bind << 4) | self.st_type
         return self.fmt.pack('IIIBBH', self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx)
 
 
@@ -1289,7 +1289,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 s.st_shndx = objfile_section.index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
-                    s.type = STT_FUNC
+                    s.st_type = STT_FUNC
                     if s.name in func_sizes:
                         s.st_size = func_sizes[s.name]
                 if section_name == '.late_rodata':
@@ -1379,11 +1379,11 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         name_to_sym = {}
         for s in new_syms:
             if s.name == "_gp_disp":
-                s.type = STT_OBJECT
-            if s.bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
+                s.st_type = STT_OBJECT
+            if s.st_bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
                 raise Failure("local symbol \"" + s.name + "\" is undefined")
             if not s.name:
-                if s.bind != STB_LOCAL:
+                if s.st_bind != STB_LOCAL:
                     raise Failure("global symbol with no name")
                 newer_syms.append(s)
             else:
@@ -1403,8 +1403,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Put local symbols in front, with the initial dummy entry first, and
         # _gp_disp at the end if it exists.
         new_syms.insert(0, empty_symbol)
-        new_syms.sort(key=lambda s: (s.bind != STB_LOCAL, s.name == "_gp_disp"))
-        num_local_syms = sum(1 for s in new_syms if s.bind == STB_LOCAL)
+        new_syms.sort(key=lambda s: (s.st_bind != STB_LOCAL, s.name == "_gp_disp"))
+        num_local_syms = sum(1 for s in new_syms if s.st_bind == STB_LOCAL)
 
         for i, s in enumerate(new_syms):
             s.new_index = i
