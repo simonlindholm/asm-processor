@@ -1410,12 +1410,12 @@ pub(crate) fn fixup_objfile(
                     objfile.add_section(
                         &format!(".rela{}", target_sectype),
                         &HeaderFields {
-                            sh_type: SHT_REL,
+                            sh_type: SHT_RELA,
                             sh_flags: 0,
                             sh_link: objfile.symtab().index as u32,
                             sh_info: target_index as u32,
                             sh_addralign: 4,
-                            sh_entsize: 8,
+                            sh_entsize: 12,
                         },
                         &new_data,
                         endian,
