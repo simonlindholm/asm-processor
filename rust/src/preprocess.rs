@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use enum_map::{Enum, EnumMap};
 use regex::Regex;
 
-use crate::{AsmProcArgs, Encoding, Function, GlobalState, OptLevel, OutputSection, RunResult};
+use crate::{AsmProcArgs, Encoding, Function, OptLevel, OutputSection, RunResult};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
 enum InputSection {
@@ -25,6 +25,108 @@ impl InputSection {
             ".bss" => Some(InputSection::Bss),
             _ => None,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GlobalState {
+    late_rodata_hex: u32,
+    valuectr: usize,
+    namectr: usize,
+    min_instr_count: usize,
+    skip_instr_count: usize,
+    use_jtbl_for_rodata: bool,
+    prelude_if_late_rodata: usize,
+    mips1: bool,
+    pascal: bool,
+}
+
+impl GlobalState {
+    fn new(
+        min_instr_count: usize,
+        skip_instr_count: usize,
+        use_jtbl_for_rodata: bool,
+        prelude_if_late_rodata: usize,
+        mips1: bool,
+        pascal: bool,
+    ) -> Self {
+        Self {
+            // A value that hopefully never appears as a 32-bit rodata constant (or we
+            // miscompile late rodata). Increases by 1 in each step.
+            late_rodata_hex: 0xE0123456,
+            valuectr: 0,
+            namectr: 0,
+            min_instr_count,
+            skip_instr_count,
+            use_jtbl_for_rodata,
+            prelude_if_late_rodata,
+            mips1,
+            pascal,
+        }
+    }
+
+    fn next_late_rodata_hex(&mut self) -> [u8; 4] {
+        let dummy_bytes = self.late_rodata_hex.to_be_bytes();
+        if (self.late_rodata_hex & 0xffff) == 0 {
+            // Avoid lui
+            self.late_rodata_hex += 1;
+        }
+        self.late_rodata_hex += 1;
+        dummy_bytes
+    }
+
+    fn make_name(&mut self, cat: &str) -> String {
+        self.namectr += 1;
+        format!("_asmpp_{}{}", cat, self.namectr)
+    }
+
+    fn func_prologue(&self, name: &str) -> String {
+        if self.pascal {
+            [
+                &format!("procedure {}();", name),
+                "type",
+                " pi = ^integer;",
+                " pf = ^single;",
+                " pd = ^double;",
+                "var",
+                " vi: pi;",
+                " vf: pf;",
+                " vd: pd;",
+                "begin",
+                " vi := vi;",
+                " vf := vf;",
+                " vd := vd;",
+            ]
+            .join(" ")
+        } else {
+            format!("void {}(void) {{", name)
+        }
+    }
+
+    fn func_epilogue(&self) -> String {
+        if self.pascal {
+            "end;".to_string()
+        } else {
+            '}'.to_string()
+        }
+    }
+
+    fn pascal_assignment_float(&mut self, tp: &str, val: f32) -> String {
+        self.valuectr += 1;
+        let address = (8 * self.valuectr) & 0x7FFF;
+        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
+    }
+
+    fn pascal_assignment_double(&mut self, tp: &str, val: f64) -> String {
+        self.valuectr += 1;
+        let address = (8 * self.valuectr) & 0x7FFF;
+        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
+    }
+
+    fn pascal_assignment_int(&mut self, tp: &str, val: i32) -> String {
+        self.valuectr += 1;
+        let address = (8 * self.valuectr) & 0x7FFF;
+        format!("v{} := p{}({}); v{}^ := {};", tp, tp, address, tp, val)
     }
 }
 
