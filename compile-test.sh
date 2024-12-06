@@ -23,5 +23,11 @@ if [[ "$OPTFLAGS" != *-KPIC* ]]; then
 fi
 
 set -e
-# python3 python/build.py --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
-./rust/target/release/asm-processor --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
+
+if [[ "$2" == "python" ]]; then
+    PROG="python3 ./python/build.py"
+else
+    PROG="./rust/target/release/asm-processor"
+fi
+
+$PROG --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"

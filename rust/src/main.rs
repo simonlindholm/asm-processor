@@ -364,13 +364,8 @@ fn main() -> Result<()> {
 
     let temp_dir = TempDir::with_prefix("asm_processor")?;
     let preprocessed_filename = format!(
-        "preprocessed_{}.{}",
-        uuid::Uuid::new_v4(),
-        in_file
-            .extension()
-            .ok_or_else(|| anyhow::anyhow!("No file extension"))?
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid file extension"))?
+        "preprocessed_{}",
+        in_file.file_name().unwrap().to_str().unwrap()
     );
     let preprocessed_path = temp_dir.path().join(&preprocessed_filename);
     let preprocessed_file = File::create(&preprocessed_path)?;
