@@ -26,8 +26,12 @@ set -e
 
 if [[ "$2" == "python" ]]; then
     PROG="python3 ./python/build.py"
-else
+elif [[ "$2" == "rust-release" ]]; then
     PROG="./rust/target/release/asm-processor"
+elif [[ "$2" == "rust-debug" ]]; then
+    PROG="./rust/target/debug/asm-processor"
+else
+	echo "Usage: $0 input.c (python|rust-release|rust-debug)"
 fi
 
 $PROG --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
