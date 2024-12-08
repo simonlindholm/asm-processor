@@ -3,7 +3,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufWriter, Cursor, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Cursor, Seek, SeekFrom, Write},
     path::PathBuf,
     process::Command,
 };
@@ -329,7 +329,11 @@ impl Section {
 
     fn lookup_str(&self, index: usize) -> Vec<u8> {
         assert_eq!(self.header.sh_type, SHT_STRTAB);
-        let to = self.data.iter().skip(index).position(|&x| x == 0).unwrap() + index;
+        let to = self.data[index..]
+            .iter()
+            .position(|&x| x == 0)
+            .expect("bad strtab index")
+            + index;
         self.data[index..to].to_owned()
     }
 
@@ -369,10 +373,14 @@ impl Section {
         None
     }
 
-    fn find_symbol_in_section(&self, name: &[u8], section: &Section) -> Option<usize> {
-        let (st_shndx, st_value) = self.find_symbol(name)?;
-        assert_eq!(st_shndx, section.index);
-        Some(st_value)
+    fn find_symbol_in_section(&self, name: &[u8], section: &Section) -> usize {
+        let Some((st_shndx, st_value)) = self.find_symbol(name) else {
+            panic!("failed to find symbol: {}", String::from_utf8_lossy(name));
+        };
+        if st_shndx != section.index {
+            panic!("symbol {} is in wrong section", String::from_utf8_lossy(name));
+        }
+        st_value
     }
 
     fn init_symbols(&mut self, strtab: &Section, endian: Endian) {
@@ -402,7 +410,7 @@ impl Section {
         self.relocations = entries;
     }
 
-    fn relocate_mdebug(&mut self, original_offset: u32, endian: Endian) -> BinResult<()> {
+    fn relocate_mdebug(&mut self, original_offset: u32, endian: Endian) {
         assert_eq!(self.header.sh_type, SHT_MIPS_DEBUG);
         let shift_by = self.header.sh_offset.wrapping_sub(original_offset);
 
@@ -429,10 +437,9 @@ impl Section {
 
         let mut new_data = [0; Hdrr::SIZE];
         let mut cursor = Cursor::new(new_data.as_mut_slice());
-        hdrr.write_options(&mut cursor, endian, ())?;
+        hdrr.write_options(&mut cursor, endian, ()).unwrap();
 
         self.data = new_data.to_vec();
-        Ok(())
     }
 }
 
@@ -486,7 +493,7 @@ impl ElfFile {
         let symtab_index = sections
             .iter()
             .position(|s| s.header.sh_type == SHT_SYMTAB)
-            .unwrap();
+            .expect("missing symtab");
         let sym_strtab_index = sections[symtab_index].header.sh_link as usize;
 
         let shstr = sections[header.e_shstrndx as usize].clone();
@@ -495,6 +502,7 @@ impl ElfFile {
         for i in 0..sections.len() {
             let s = &mut sections[i];
             s.name = String::from_utf8(shstr.lookup_str(s.header.sh_name as usize)).unwrap();
+            assert!(s.name.is_ascii());
 
             if s.header.sh_type == SHT_SYMTAB {
                 s.init_symbols(&sym_strtab, endian);
@@ -543,7 +551,7 @@ impl ElfFile {
         let shstr = self
             .sections
             .get_mut(self.header.e_shstrndx as usize)
-            .unwrap();
+            .expect("bad e_shstrndx");
         let sh_name = shstr.add_str(name.as_bytes());
         let mut s = Section::from_parts(sh_name, fields, data, self.sections.len(), endian);
         s.name = name.to_string();
@@ -553,51 +561,53 @@ impl ElfFile {
     fn drop_mdebug_gptab(&mut self) {
         // We can only drop sections at the end, since otherwise section
         // references might be wrong. Luckily, these sections typically are.
-        while self.sections.last().unwrap().header.sh_type == SHT_MIPS_DEBUG
-            || self.sections.last().unwrap().header.sh_type == SHT_MIPS_GPTAB
-        {
+        while let Some(s) = self.sections.last() {
+            if s.header.sh_type != SHT_MIPS_DEBUG && s.header.sh_type != SHT_MIPS_GPTAB {
+                break;
+            }
             self.sections.pop();
         }
     }
 
-    fn pad_out(writer: &mut BufWriter<&mut File>, align: usize) {
-        let pos = writer.stream_position().unwrap() as usize;
+    fn pad_out(writer: &mut BufWriter<&mut File>, align: usize) -> io::Result<()> {
+        let pos = writer.stream_position()? as usize;
 
         if align > 0 && pos % align != 0 {
             let pad = align - (pos % align);
             for _ in 0..pad {
-                writer.write_all(&[0]).unwrap();
+                writer.write_all(&[0])?;
             }
         }
+        Ok(())
     }
 
-    fn write(&mut self, writer: &mut BufWriter<&mut File>) -> BinResult<()> {
+    fn write(&mut self, writer: &mut BufWriter<&mut File>) -> io::Result<()> {
         self.header.e_shnum = self.sections.len() as u16;
-        writer.write_all(&self.header.to_bin(self.endian)).unwrap();
+        writer.write_all(&self.header.to_bin(self.endian))?;
 
         for s in &mut self.sections {
             if s.header.sh_type != SHT_NOBITS && s.header.sh_type != SHT_NULL {
-                Self::pad_out(writer, s.header.sh_addralign as usize);
+                Self::pad_out(writer, s.header.sh_addralign as usize)?;
                 let old_offset = s.header.sh_offset;
-                s.header.sh_offset = writer.stream_position().unwrap() as u32;
+                s.header.sh_offset = writer.stream_position()? as u32;
                 if s.header.sh_type == SHT_MIPS_DEBUG && s.header.sh_offset != old_offset {
                     // The .mdebug section has moved, relocate offsets
-                    s.relocate_mdebug(old_offset, self.endian)?;
+                    s.relocate_mdebug(old_offset, self.endian);
                 }
-                writer.write_all(&s.data).unwrap();
+                writer.write_all(&s.data)?;
             }
         }
 
-        Self::pad_out(writer, 4);
-        self.header.e_shoff = writer.stream_position().unwrap() as u32;
+        Self::pad_out(writer, 4)?;
+        self.header.e_shoff = writer.stream_position()? as u32;
 
         for s in &mut self.sections {
-            writer.write_all(&s.header_to_bin(self.endian)).unwrap();
+            writer.write_all(&s.header_to_bin(self.endian))?;
         }
 
-        writer.seek(SeekFrom::Start(0)).unwrap();
-        writer.write_all(&self.header.to_bin(self.endian)).unwrap();
-        writer.flush().unwrap();
+        writer.seek(SeekFrom::Start(0))?;
+        writer.write_all(&self.header.to_bin(self.endian))?;
+        writer.flush()?;
         Ok(())
     }
 }
@@ -693,7 +703,7 @@ pub(crate) fn fixup_objfile(
                 fn_desc: function.fn_desc.clone(),
             });
             if !text_glabels.is_empty() && sectype == OutputSection::Text {
-                func_sizes.insert(text_glabels.first().unwrap().to_vec(), size);
+                func_sizes.insert(text_glabels[0].to_vec(), size);
             }
             prev_locs[sectype] = loc + size;
         }
@@ -776,7 +786,9 @@ pub(crate) fn fixup_objfile(
 
     // Unify reginfo sections
     if let Some(target_reginfo) = objfile.find_section_mut(".reginfo") {
-        let source_reginfo = &asm_objfile.find_section(".reginfo").unwrap();
+        let source_reginfo = &asm_objfile
+            .find_section(".reginfo")
+            .expect("couldn't find source .reginfo");
         for (s, t) in source_reginfo
             .data
             .iter()
@@ -806,12 +818,10 @@ pub(crate) fn fixup_objfile(
         {
             let loc1 = asm_objfile
                 .symtab()
-                .find_symbol_in_section(format!("{}_asm_start", &temp_name).as_bytes(), source)
-                .unwrap();
+                .find_symbol_in_section(format!("{}_asm_start", &temp_name).as_bytes(), source);
             let loc2 = asm_objfile
                 .symtab()
-                .find_symbol_in_section(format!("{}_asm_end", &temp_name).as_bytes(), source)
-                .unwrap();
+                .find_symbol_in_section(format!("{}_asm_end", &temp_name).as_bytes(), source);
             if loc1 != loc {
                 panic!(
                     "assembly and C files don't line up for section {}, {}",
@@ -864,12 +874,10 @@ pub(crate) fn fixup_objfile(
             .expect(".rodata target section should exist");
         let mut source_pos = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source)
-            .unwrap();
+            .find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source);
         let source_end = asm_objfile
             .symtab()
-            .find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source)
-            .unwrap();
+            .find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source);
         let num_dummies: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
         let expected_size = num_dummies * 4 + all_jtbl_rodata_size.iter().sum::<usize>();
 
@@ -956,7 +964,7 @@ pub(crate) fn fixup_objfile(
     // Move over symbols, deleting the temporary function labels.
     // Skip over new local symbols that aren't relocated against, to
     // avoid conflicts.
-    let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
+    let empty_symbol = objfile.symtab().symbol_entries[0].clone();
     let mut new_syms: Vec<(Symbol, Vec<SymInd>)> = objfile
         .symtab()
         .symbol_entries
@@ -984,21 +992,22 @@ pub(crate) fn fixup_objfile(
             if section_name == ".late_rodata" {
                 target_section_name = ".rodata".to_string();
             } else if !INPUT_SECTION_NAMES.contains(&section_name.as_str()) {
-                return Err(anyhow::anyhow!("generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found {}", section_name));
+                return Err(anyhow::anyhow!(
+                    "generated assembly .o must only have symbols for .text, .data, .rodata, .late_rodata, ABS and UNDEF, but found {}",
+                    section_name
+                ));
             }
-            let objfile_section = objfile.find_section(&target_section_name);
-            if objfile_section.is_none() {
+            let Some(objfile_section) = objfile.find_section(&target_section_name) else {
                 return Err(anyhow::anyhow!(
                     "generated assembly .o has section that real objfile lacks: {}",
                     target_section_name
                 ));
-            }
-            s.st_shndx = objfile_section.unwrap().index;
+            };
+            s.st_shndx = objfile_section.index;
             // glabels aren't marked as functions, making objdump output confusing. Fix that.
             if all_text_glabels.contains(&s.name) {
                 s.st_type = STT_FUNC;
-                if func_sizes.contains_key(&s.name) {
-                    let size = func_sizes[&s.name];
+                if let Some(&size) = func_sizes.get(&s.name) {
                     s.st_size = size;
                 }
             }
@@ -1013,8 +1022,7 @@ pub(crate) fn fixup_objfile(
                         "local symbols in .late_rodata are not allowed"
                     ));
                 }
-                let st_val = s.st_value;
-                s.st_value = moved_late_rodata[&st_val];
+                s.st_value = moved_late_rodata[&s.st_value];
             }
         }
         s.st_name += strtab_adj;
@@ -1061,11 +1069,10 @@ pub(crate) fn fixup_objfile(
 
                 if st == MIPS_DEBUG_ST_STATIC || st == MIPS_DEBUG_ST_STATIC_PROC {
                     let symbol_name_offset = cb_ss_offset + iss_base + iss;
-                    let symbol_name_offset_end = objfile_data
+                    let symbol_name_offset_end = objfile_data[symbol_name_offset..]
                         .iter()
-                        .skip(symbol_name_offset)
                         .position(|x| *x == 0)
-                        .unwrap()
+                        .expect("bad .mdebug strtab reference")
                         + symbol_name_offset;
                     let mut symbol_name =
                         objfile_data[symbol_name_offset..symbol_name_offset_end].to_owned();
@@ -1095,7 +1102,12 @@ pub(crate) fn fixup_objfile(
                             return Err(anyhow::anyhow!("unsupported MIPS_DEBUG_SC value: {}", sc));
                         }
                     };
-                    let section = objfile.find_section(section_name).unwrap();
+                    let Some(section) = objfile.find_section(section_name) else {
+                        panic!(
+                            "couldn't find section referenced from .mdebug: {}",
+                            section_name
+                        );
+                    };
                     let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
                     let binding = if make_statics_global {
                         STB_GLOBAL
@@ -1207,7 +1219,7 @@ pub(crate) fn fixup_objfile(
     }
 
     let new_syms: Vec<_> = new_syms.iter().map(|(s, _)| s).collect();
-    let num_local_syms = new_syms.iter().filter(|x| x.st_bind == STB_LOCAL).count();
+    let num_local_syms = new_syms.iter().filter(|s| s.st_bind == STB_LOCAL).count();
     let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.to_bin()).collect();
 
     objfile.symtab_mut().data = new_sym_data;
@@ -1233,7 +1245,7 @@ pub(crate) fn fixup_objfile(
                         continue;
                     }
                     rel.sym_index = obj_new_index[&rel.sym_index];
-                    nrels.push(rel.clone());
+                    nrels.push(rel);
                 }
                 reltab.data = nrels.iter().flat_map(|x| x.to_bin(endian)).collect();
                 reltab.relocations = nrels;
@@ -1253,7 +1265,10 @@ pub(crate) fn fixup_objfile(
             } else {
                 sectype
             };
-            let target_index = objfile.find_section(target_sectype).unwrap().index;
+            let target_index = objfile
+                .find_section(target_sectype)
+                .expect("didn't find target section")
+                .index;
             for reltab in &source.relocated_by {
                 let reltab = &mut asm_objfile.sections[*reltab].clone();
                 for rel in &mut reltab.relocations {
@@ -1296,7 +1311,7 @@ pub(crate) fn fixup_objfile(
         }
     }
 
-    let mut file = std::fs::File::create(objfile_path).unwrap();
+    let mut file = std::fs::File::create(objfile_path).expect("unable to write to .o file");
     let mut writer = BufWriter::new(&mut file);
     objfile.write(&mut writer)?;
 
