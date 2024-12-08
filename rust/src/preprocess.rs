@@ -2,7 +2,7 @@ use std::{fs::read_to_string, io::Write, iter, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use enum_map::{Enum, EnumMap};
-use regex::Regex;
+use regex_lite::Regex;
 
 use crate::{AsmProcArgs, Encoding, Function, OptLevel, OutputSection, RunResult};
 
@@ -294,7 +294,7 @@ impl GlobalAsmBlock {
             )
         });
 
-        fn re_comment_replacer(caps: &regex::Captures) -> String {
+        fn re_comment_replacer(caps: &regex_lite::Captures) -> String {
             let s = caps[0].to_string();
             if s.starts_with("/") || s.starts_with("#") {
                 " ".to_owned()
@@ -723,7 +723,7 @@ impl GlobalAsmBlock {
 }
 
 /// Convert a float string to its hexadecimal representation
-fn repl_float_hex(cap: &regex::Captures) -> String {
+fn repl_float_hex(cap: &regex_lite::Captures) -> String {
     let float_str = cap[0].trim().trim_end_matches('f');
     let float_val = float_str.parse::<f32>().unwrap();
     let hex_val = f32::to_be_bytes(float_val);
