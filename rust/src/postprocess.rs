@@ -1,13 +1,11 @@
 use anyhow::Result;
 use std::{
-    cell::RefCell,
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufWriter, Cursor, Seek, SeekFrom, Write},
     path::PathBuf,
     process::Command,
-    rc::Rc,
 };
 
 use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
@@ -269,7 +267,7 @@ struct Section {
     data: Vec<u8>,
     index: usize,
     relocated_by: Vec<usize>,
-    symbol_entries: Vec<Rc<RefCell<Symbol>>>,
+    symbol_entries: Vec<Symbol>,
     relocations: Vec<Relocation>,
     name: String,
 }
@@ -364,7 +362,6 @@ impl Section {
     fn find_symbol(&self, name: &[u8]) -> Option<(usize, usize)> {
         assert_eq!(self.header.sh_type, SHT_SYMTAB);
         for s in &self.symbol_entries {
-            let s = s.borrow();
             if s.name == name {
                 return Some((s.st_shndx, s.st_value));
             }
@@ -384,7 +381,7 @@ impl Section {
 
         for i in 0..(self.data.len() / 16) {
             let symbol = Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, endian).unwrap();
-            self.symbol_entries.push(Rc::new(RefCell::new(symbol)));
+            self.symbol_entries.push(symbol);
         }
     }
 
@@ -960,14 +957,14 @@ pub(crate) fn fixup_objfile(
     // Skip over new local symbols that aren't relocated against, to
     // avoid conflicts.
     let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
-    let mut new_syms: Vec<(Rc<RefCell<Symbol>>, Vec<SymInd>)> = objfile
+    let mut new_syms: Vec<(Symbol, Vec<SymInd>)> = objfile
         .symtab()
         .symbol_entries
         .iter()
         .enumerate()
         .map(|(i, x)| (x, vec![SymInd::Obj(i)]))
         .skip(1)
-        .filter(|(x, _)| !x.borrow().name.starts_with(b"_asmpp_"))
+        .filter(|(x, _)| !x.name.starts_with(b"_asmpp_"))
         .map(|(x, inds)| (x.clone(), inds))
         .collect();
 
@@ -976,12 +973,13 @@ pub(crate) fn fixup_objfile(
         if is_local && !relocated_symbols.contains(&i) {
             continue;
         }
-        if s.borrow().name.starts_with(b"_asmpp_") {
+        if s.name.starts_with(b"_asmpp_") {
             assert!(!relocated_symbols.contains(&i));
             continue;
         }
-        if s.borrow().st_shndx != SHN_UNDEF && s.borrow().st_shndx != SHN_ABS {
-            let section_name = asm_objfile.sections[s.borrow().st_shndx].name.clone();
+        let mut s = s.clone();
+        if s.st_shndx != SHN_UNDEF && s.st_shndx != SHN_ABS {
+            let section_name = asm_objfile.sections[s.st_shndx].name.clone();
             let mut target_section_name = section_name.clone();
             if section_name == ".late_rodata" {
                 target_section_name = ".rodata".to_string();
@@ -995,17 +993,17 @@ pub(crate) fn fixup_objfile(
                     target_section_name
                 ));
             }
-            s.borrow_mut().st_shndx = objfile_section.unwrap().index;
+            s.st_shndx = objfile_section.unwrap().index;
             // glabels aren't marked as functions, making objdump output confusing. Fix that.
-            if all_text_glabels.contains(&s.borrow().name) {
-                s.borrow_mut().st_type = STT_FUNC;
-                if func_sizes.contains_key(&s.borrow().name) {
-                    let size = func_sizes[&s.borrow().name];
-                    s.borrow_mut().st_size = size;
+            if all_text_glabels.contains(&s.name) {
+                s.st_type = STT_FUNC;
+                if func_sizes.contains_key(&s.name) {
+                    let size = func_sizes[&s.name];
+                    s.st_size = size;
                 }
             }
             if section_name == ".late_rodata" {
-                if s.borrow().st_value == 0 {
+                if s.st_value == 0 {
                     // This must be a symbol corresponding to the whole .late_rodata
                     // section, being referred to from a relocation.
                     // Moving local symbols is tricky, because it requires fixing up
@@ -1015,12 +1013,12 @@ pub(crate) fn fixup_objfile(
                         "local symbols in .late_rodata are not allowed"
                     ));
                 }
-                let st_val = s.borrow().st_value;
-                s.borrow_mut().st_value = moved_late_rodata[&st_val];
+                let st_val = s.st_value;
+                s.st_value = moved_late_rodata[&st_val];
             }
         }
-        s.borrow_mut().st_name += strtab_adj;
-        new_syms.push((s.clone(), vec![SymInd::Asm(i)]));
+        s.st_name += strtab_adj;
+        new_syms.push((s, vec![SymInd::Asm(i)]));
     }
 
     let make_statics_global = match convert_statics {
@@ -1117,7 +1115,7 @@ pub(crate) fn fixup_objfile(
                     strtab_index += emitted_symbol_name.len() + 1;
                     new_strtab_data.extend(&emitted_symbol_name);
                     new_strtab_data.push(b'\0');
-                    new_syms.push((Rc::new(RefCell::new(sym)), vec![]));
+                    new_syms.push((sym, vec![]));
                 }
                 match st {
                     MIPS_DEBUG_ST_FILE
@@ -1144,7 +1142,7 @@ pub(crate) fn fixup_objfile(
     // Get rid of duplicate symbols, favoring ones that are not UNDEF.
     // Skip this for unnamed local symbols though.
     new_syms.sort_by(|(a, _), (b, _)| {
-        if a.borrow().st_shndx != SHN_UNDEF && b.borrow().st_shndx == SHN_UNDEF {
+        if a.st_shndx != SHN_UNDEF && b.st_shndx == SHN_UNDEF {
             Ordering::Less
         } else {
             Ordering::Greater
@@ -1154,36 +1152,35 @@ pub(crate) fn fixup_objfile(
     let new_syms_prev = new_syms;
     let mut new_syms = vec![];
     let mut name_to_sym = HashMap::new();
-    for (s, inds) in new_syms_prev {
-        if s.borrow().name == b"_gp_disp" {
-            s.borrow_mut().st_type = STT_OBJECT;
+    for (mut s, inds) in new_syms_prev {
+        if s.name == b"_gp_disp" {
+            s.st_type = STT_OBJECT;
         }
-        if s.borrow().st_bind == STB_LOCAL && s.borrow().st_shndx == SHN_UNDEF {
+        if s.st_bind == STB_LOCAL && s.st_shndx == SHN_UNDEF {
             return Err(anyhow::anyhow!(
                 "local symbol \"{}\" is undefined",
-                String::from_utf8_lossy(&s.borrow().name)
+                String::from_utf8_lossy(&s.name)
             ));
         }
-        if s.borrow().name.is_empty() {
-            if s.borrow().st_bind != STB_LOCAL {
+        if s.name.is_empty() {
+            if s.st_bind != STB_LOCAL {
                 return Err(anyhow::anyhow!("global symbol with no name"));
             }
             new_syms.push((s.clone(), inds));
         } else {
-            match name_to_sym.get(&s.borrow().name) {
+            match name_to_sym.get(&s.name) {
                 None => {
-                    name_to_sym.insert(s.borrow().name.clone(), new_syms.len());
+                    name_to_sym.insert(s.name.clone(), new_syms.len());
                     new_syms.push((s.clone(), inds));
                 }
                 Some(&existing) => {
                     let (s2, inds2) = &mut new_syms[existing];
-                    if s.borrow().st_shndx != SHN_UNDEF
-                        && !(s2.borrow().st_shndx == s.borrow().st_shndx
-                            && s2.borrow().st_value == s.borrow().st_value)
+                    if s.st_shndx != SHN_UNDEF
+                        && !(s2.st_shndx == s.st_shndx && s2.st_value == s.st_value)
                     {
                         return Err(anyhow::anyhow!(
                             "symbol \"{}\" defined twice",
-                            String::from_utf8_lossy(&s.borrow().name)
+                            String::from_utf8_lossy(&s.name)
                         ));
                     }
                     inds2.extend(inds);
@@ -1195,12 +1192,7 @@ pub(crate) fn fixup_objfile(
     // Put local symbols in front, with the initial dummy entry first, and
     // _gp_disp at the end if it exists.
     new_syms.insert(0, (empty_symbol.clone(), vec![]));
-    new_syms.sort_by_key(|(a, _)| {
-        (
-            a.borrow().st_bind != STB_LOCAL,
-            a.borrow().name == b"_gp_disp",
-        )
-    });
+    new_syms.sort_by_key(|(a, _)| (a.st_bind != STB_LOCAL, a.name == b"_gp_disp"));
 
     let mut obj_new_index: HashMap<usize, usize> = HashMap::new();
     let mut asm_new_index: HashMap<usize, usize> = HashMap::new();
@@ -1215,11 +1207,8 @@ pub(crate) fn fixup_objfile(
     }
 
     let new_syms: Vec<_> = new_syms.iter().map(|(s, _)| s).collect();
-    let num_local_syms = new_syms
-        .iter()
-        .filter(|x| x.borrow().st_bind == STB_LOCAL)
-        .count();
-    let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
+    let num_local_syms = new_syms.iter().filter(|x| x.st_bind == STB_LOCAL).count();
+    let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.to_bin()).collect();
 
     objfile.symtab_mut().data = new_sym_data;
     objfile.symtab_mut().header.sh_info = num_local_syms as u32;
