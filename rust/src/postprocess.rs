@@ -951,17 +951,24 @@ pub(crate) fn fixup_objfile(
         }
     }
 
+    enum SymInd {
+        Obj(usize),
+        Asm(usize),
+    }
+
     // Move over symbols, deleting the temporary function labels.
     // Skip over new local symbols that aren't relocated against, to
     // avoid conflicts.
     let empty_symbol = &objfile.symtab().symbol_entries[0].clone();
-    let mut new_syms: Vec<Rc<RefCell<Symbol>>> = objfile
+    let mut new_syms: Vec<(Rc<RefCell<Symbol>>, Vec<SymInd>)> = objfile
         .symtab()
         .symbol_entries
         .iter()
+        .enumerate()
+        .map(|(i, x)| (x, vec![SymInd::Obj(i)]))
         .skip(1)
-        .filter(|x| !x.borrow().name.starts_with(b"_asmpp_"))
-        .cloned()
+        .filter(|(x, _)| !x.borrow().name.starts_with(b"_asmpp_"))
+        .map(|(x, inds)| (x.clone(), inds))
         .collect();
 
     for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
@@ -1013,7 +1020,7 @@ pub(crate) fn fixup_objfile(
             }
         }
         s.borrow_mut().st_name += strtab_adj;
-        new_syms.push(s.clone());
+        new_syms.push((s.clone(), vec![SymInd::Asm(i)]));
     }
 
     let make_statics_global = match convert_statics {
@@ -1110,7 +1117,7 @@ pub(crate) fn fixup_objfile(
                     strtab_index += emitted_symbol_name.len() + 1;
                     new_strtab_data.extend(&emitted_symbol_name);
                     new_strtab_data.push(b'\0');
-                    new_syms.push(Rc::new(RefCell::new(sym)));
+                    new_syms.push((Rc::new(RefCell::new(sym)), vec![]));
                 }
                 match st {
                     MIPS_DEBUG_ST_FILE
@@ -1136,7 +1143,7 @@ pub(crate) fn fixup_objfile(
 
     // Get rid of duplicate symbols, favoring ones that are not UNDEF.
     // Skip this for unnamed local symbols though.
-    new_syms.sort_by(|a, b| {
+    new_syms.sort_by(|(a, _), (b, _)| {
         if a.borrow().st_shndx != SHN_UNDEF && b.borrow().st_shndx == SHN_UNDEF {
             Ordering::Less
         } else {
@@ -1144,15 +1151,10 @@ pub(crate) fn fixup_objfile(
         }
     });
 
-    struct SymPair {
-        sym1: Rc<RefCell<Symbol>>,
-        sym2: Rc<RefCell<Symbol>>,
-    }
-
-    let mut old_syms: Vec<SymPair> = vec![];
-    let mut newer_syms = vec![];
+    let new_syms_prev = new_syms;
+    let mut new_syms = vec![];
     let mut name_to_sym = HashMap::new();
-    for s in new_syms.iter_mut() {
+    for (s, inds) in new_syms_prev {
         if s.borrow().name == b"_gp_disp" {
             s.borrow_mut().st_type = STT_OBJECT;
         }
@@ -1166,59 +1168,58 @@ pub(crate) fn fixup_objfile(
             if s.borrow().st_bind != STB_LOCAL {
                 return Err(anyhow::anyhow!("global symbol with no name"));
             }
-            newer_syms.push(s.clone());
+            new_syms.push((s.clone(), inds));
         } else {
-            let existing = name_to_sym.get(&s.borrow().name);
-            if existing.is_none() {
-                name_to_sym.insert(s.borrow().name.clone(), s.clone());
-                newer_syms.push(s.clone());
-            } else {
-                let existing = existing.unwrap();
-                if s.borrow().st_shndx != SHN_UNDEF
-                    && !(existing.borrow().st_shndx == s.borrow().st_shndx
-                        && existing.borrow().st_value == s.borrow().st_value)
-                {
-                    return Err(anyhow::anyhow!(
-                        "symbol \"{}\" defined twice",
-                        String::from_utf8_lossy(&s.borrow().name)
-                    ));
-                } else {
-                    old_syms.push(SymPair {
-                        sym1: s.clone(),
-                        sym2: existing.clone(),
-                    });
+            match name_to_sym.get(&s.borrow().name) {
+                None => {
+                    name_to_sym.insert(s.borrow().name.clone(), new_syms.len());
+                    new_syms.push((s.clone(), inds));
+                }
+                Some(&existing) => {
+                    let (s2, inds2) = &mut new_syms[existing];
+                    if s.borrow().st_shndx != SHN_UNDEF
+                        && !(s2.borrow().st_shndx == s.borrow().st_shndx
+                            && s2.borrow().st_value == s.borrow().st_value)
+                    {
+                        return Err(anyhow::anyhow!(
+                            "symbol \"{}\" defined twice",
+                            String::from_utf8_lossy(&s.borrow().name)
+                        ));
+                    }
+                    inds2.extend(inds);
                 }
             }
         }
     }
-    new_syms = newer_syms;
 
     // Put local symbols in front, with the initial dummy entry first, and
     // _gp_disp at the end if it exists.
-    new_syms.insert(0, empty_symbol.clone());
-    new_syms.sort_by_key(|a| {
+    new_syms.insert(0, (empty_symbol.clone(), vec![]));
+    new_syms.sort_by_key(|(a, _)| {
         (
             a.borrow().st_bind != STB_LOCAL,
             a.borrow().name == b"_gp_disp",
         )
     });
 
+    let mut obj_new_index: HashMap<usize, usize> = HashMap::new();
+    let mut asm_new_index: HashMap<usize, usize> = HashMap::new();
+
+    for (new_index, (_, inds)) in new_syms.iter().enumerate() {
+        for i in inds {
+            match i {
+                SymInd::Obj(i) => obj_new_index.insert(*i, new_index),
+                SymInd::Asm(i) => asm_new_index.insert(*i, new_index),
+            };
+        }
+    }
+
+    let new_syms: Vec<_> = new_syms.iter().map(|(s, _)| s).collect();
     let num_local_syms = new_syms
         .iter()
         .filter(|x| x.borrow().st_bind == STB_LOCAL)
         .count();
     let new_sym_data: Vec<u8> = new_syms.iter().flat_map(|s| s.borrow().to_bin()).collect();
-    let mut new_index: HashMap<Vec<u8>, usize> = HashMap::new();
-
-    for (i, s) in new_syms.iter().enumerate() {
-        new_index.insert(s.borrow().name.clone(), i);
-    }
-    for sp in old_syms.iter() {
-        new_index.insert(
-            sp.sym1.borrow().name.clone(),
-            new_index[&sp.sym2.borrow().name],
-        );
-    }
 
     objfile.symtab_mut().data = new_sym_data;
     objfile.symtab_mut().header.sh_info = num_local_syms as u32;
@@ -1228,8 +1229,6 @@ pub(crate) fn fixup_objfile(
         let target = objfile.find_section(sectype.as_str()).cloned();
 
         if let Some(target) = target {
-            let symbol_entries = objfile.symtab().symbol_entries.clone();
-
             // fixup relocation symbol indices, since we butchered them above
             for reltab in target.relocated_by.iter() {
                 let reltab = &mut objfile.sections[*reltab];
@@ -1244,7 +1243,7 @@ pub(crate) fn fixup_objfile(
                         // don't include relocations for late_rodata dummy code
                         continue;
                     }
-                    rel.sym_index = new_index[&symbol_entries[rel.sym_index].borrow().name];
+                    rel.sym_index = obj_new_index[&rel.sym_index];
                     nrels.push(rel.clone());
                 }
                 reltab.data = nrels.iter().flat_map(|x| x.to_bin(endian)).collect();
@@ -1269,9 +1268,7 @@ pub(crate) fn fixup_objfile(
             for reltab in &source.relocated_by {
                 let reltab = &mut asm_objfile.sections[*reltab].clone();
                 for rel in &mut reltab.relocations {
-                    rel.sym_index = new_index[&asm_objfile.symtab().symbol_entries[rel.sym_index]
-                        .borrow()
-                        .name];
+                    rel.sym_index = asm_new_index[&rel.sym_index];
                     if *sectype == ".late_rodata" {
                         rel.r_offset = moved_late_rodata[&rel.r_offset];
                     }
