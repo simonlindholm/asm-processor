@@ -457,11 +457,6 @@ struct HeaderFields {
     sh_entsize: u32,
 }
 
-struct SymPair {
-    sym1: Rc<RefCell<Symbol>>,
-    sym2: Rc<RefCell<Symbol>>,
-}
-
 impl ElfFile {
     fn new(data: &[u8]) -> BinResult<Self> {
         let data = data.to_vec();
@@ -610,13 +605,6 @@ impl ElfFile {
     }
 }
 
-struct ToCopyData {
-    loc: usize,
-    size: usize,
-    temp_name: String,
-    fn_desc: String,
-}
-
 pub(crate) fn fixup_objfile(
     objfile_path: &PathBuf,
     functions: &[Function],
@@ -639,6 +627,13 @@ pub(crate) fn fixup_objfile(
     let endian = objfile.endian;
 
     let mut prev_locs: EnumMap<OutputSection, usize> = EnumMap::default();
+
+    struct ToCopyData {
+        loc: usize,
+        size: usize,
+        temp_name: String,
+        fn_desc: String,
+    }
 
     let mut to_copy: EnumMap<OutputSection, Vec<ToCopyData>> = EnumMap::default();
 
@@ -1157,6 +1152,12 @@ pub(crate) fn fixup_objfile(
             Ordering::Greater
         }
     });
+
+    struct SymPair {
+        sym1: Rc<RefCell<Symbol>>,
+        sym2: Rc<RefCell<Symbol>>,
+    }
+
     let mut old_syms: Vec<SymPair> = vec![];
     let mut newer_syms = vec![];
     let mut name_to_sym = HashMap::new();
