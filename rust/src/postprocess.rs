@@ -662,12 +662,10 @@ pub(crate) fn fixup_objfile(
             if size == 0 {
                 panic!("Size of section {} is 0", sectype.as_str());
             }
-            let loc = objfile.symtab().find_symbol(temp_name.as_bytes());
-            if loc.is_none() {
+            let Some((_, loc)) = objfile.symtab().find_symbol(temp_name.as_bytes()) else {
                 ifdefed = true;
                 break;
-            }
-            let loc = loc.unwrap().1;
+            };
             let prev_loc = prev_locs[sectype];
             if loc < prev_loc {
                 // If the dummy C generates too little asm, and we have two
@@ -761,15 +759,11 @@ pub(crate) fn fixup_objfile(
         .arg(format!(
             "{} {} -o {}",
             assembler,
-            shlex::try_quote(s_file_path.to_str().unwrap())
-                .unwrap()
-                .into_owned(),
-            shlex::try_quote(o_file_path.to_str().unwrap())
-                .unwrap()
-                .into_owned()
+            shlex::try_quote(s_file_path.to_str().unwrap()).unwrap(),
+            shlex::try_quote(o_file_path.to_str().unwrap()).unwrap(),
         ))
         .status()
-        .expect("Failed to run assembler");
+        .expect("Failed to run shell");
     if !status.success() {
         return Err(anyhow::anyhow!("Failed to assemble"));
     }
@@ -784,12 +778,14 @@ pub(crate) fn fixup_objfile(
     }
 
     // Unify reginfo sections
-    let mut target_reginfo = objfile.find_section_mut(".reginfo");
-    if target_reginfo.is_some() {
-        let source_reginfo_data = &asm_objfile.find_section(".reginfo").unwrap().data;
-        let data = &mut target_reginfo.as_mut().unwrap().data;
-        for i in 0..20 {
-            data[i] |= source_reginfo_data[i];
+    if let Some(target_reginfo) = objfile.find_section_mut(".reginfo") {
+        let source_reginfo = &asm_objfile.find_section(".reginfo").unwrap();
+        for (s, t) in source_reginfo
+            .data
+            .iter()
+            .zip(target_reginfo.data.iter_mut())
+        {
+            *t |= *s;
         }
     }
 
@@ -801,8 +797,7 @@ pub(crate) fn fixup_objfile(
         if to_copy[sectype].is_empty() {
             continue;
         }
-        let source = asm_objfile.find_section(sectype.as_str());
-        let Some(source) = source else {
+        let Some(source) = asm_objfile.find_section(sectype.as_str()) else {
             panic!("didn't find source section: {}", sectype);
         };
         for &ToCopyData {
@@ -839,11 +834,12 @@ pub(crate) fn fixup_objfile(
             continue;
         }
 
-        let mut target = objfile.find_section_mut(sectype.as_str());
-        assert!(target.is_some());
-        let mut data = target.as_ref().unwrap().data.clone();
+        let Some(target) = objfile.find_section_mut(sectype.as_str()) else {
+            panic!("didn't find target section: {}", sectype);
+        };
+
         for &ToCopyData { loc, size, .. } in to_copy[sectype].iter() {
-            data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
+            target.data[loc..loc + size].copy_from_slice(&source.data[loc..loc + size]);
 
             if sectype == OutputSection::Text {
                 assert_eq!(size % 4, 0);
@@ -855,18 +851,20 @@ pub(crate) fn fixup_objfile(
                 last_rodata_pos = loc + size;
             }
         }
-        target.as_mut().unwrap().data = data;
     }
 
     // Move over late rodata. This is heuristic, sadly, since I can't think
     // of another way of doing it.
     let mut moved_late_rodata: HashMap<usize, usize> = HashMap::new();
-    if (!all_late_rodata_dummy_bytes.is_empty()
-        && all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty()))
-        || (!all_jtbl_rodata_size.is_empty() && all_jtbl_rodata_size.iter().any(|&s| s > 0))
+    if all_late_rodata_dummy_bytes.iter().any(|b| !b.is_empty())
+        || all_jtbl_rodata_size.iter().any(|&s| s > 0)
     {
-        let source = asm_objfile.find_section(".late_rodata").unwrap();
-        let target = objfile.find_section_mut(".rodata").unwrap();
+        let source = asm_objfile
+            .find_section(".late_rodata")
+            .expect(".late_rodata source section should exist");
+        let target = objfile
+            .find_section_mut(".rodata")
+            .expect(".rodata target section should exist");
         let mut source_pos = asm_objfile
             .symtab()
             .find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source)
@@ -875,9 +873,8 @@ pub(crate) fn fixup_objfile(
             .symtab()
             .find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source)
             .unwrap();
-        let mut expected_size: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
-        expected_size *= 4;
-        expected_size += all_jtbl_rodata_size.iter().sum::<usize>();
+        let num_dummies: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
+        let expected_size = num_dummies * 4 + all_jtbl_rodata_size.iter().sum::<usize>();
 
         if source_end - source_pos != expected_size {
             return Err(anyhow::anyhow!("computed wrong size of .late_rodata"));
@@ -898,7 +895,7 @@ pub(crate) fn fixup_objfile(
                 let mut pos = target.data[last_rodata_pos..]
                     .windows(4)
                     .position(|x| x == dummy_bytes)
-                    .unwrap()
+                    .expect("failed to find dummy .late_rodata bytes")
                     + last_rodata_pos;
 
                 if index == 0
@@ -914,8 +911,7 @@ pub(crate) fn fixup_objfile(
                     new_data[pos..pos + 4].copy_from_slice(b"\0\0\0\0");
                     pos += 4;
                 }
-                new_data[pos..pos + 4]
-                    .copy_from_slice(source.data[source_pos..source_pos + 4].as_ref());
+                new_data[pos..pos + 4].copy_from_slice(&source.data[source_pos..source_pos + 4]);
                 moved_late_rodata.insert(source_pos, pos);
                 last_rodata_pos = pos + 4;
                 source_pos += 4;
@@ -924,9 +920,8 @@ pub(crate) fn fixup_objfile(
             if jtbl_rodata_size > 0 {
                 assert!(!dummy_bytes_list.is_empty());
                 let pos = last_rodata_pos;
-                new_data[pos..pos + jtbl_rodata_size].copy_from_slice(
-                    source.data[source_pos..source_pos + jtbl_rodata_size].as_ref(),
-                );
+                new_data[pos..pos + jtbl_rodata_size]
+                    .copy_from_slice(&source.data[source_pos..source_pos + jtbl_rodata_size]);
                 for i in (0..jtbl_rodata_size).step_by(4) {
                     moved_late_rodata.insert(source_pos + i, pos + i);
                     jtbl_rodata_positions.insert(pos + i);
@@ -939,12 +934,9 @@ pub(crate) fn fixup_objfile(
     }
 
     // Merge strtab data.
-    let strtab_adj;
-    {
-        let strtab = objfile.sym_strtab_mut();
-        strtab_adj = strtab.data.len();
-        strtab.data.extend(&asm_objfile.sym_strtab().data);
-    }
+    let strtab = objfile.sym_strtab_mut();
+    let strtab_adj = strtab.data.len();
+    strtab.data.extend(&asm_objfile.sym_strtab().data);
 
     // Find relocated symbols
     let mut relocated_symbols = vec![];
