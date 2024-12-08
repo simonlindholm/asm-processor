@@ -111,7 +111,7 @@ struct SymbolData {
     st_shndx: u16,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 struct Symbol {
     st_name: usize,
     st_value: usize,
@@ -938,15 +938,14 @@ pub(crate) fn fixup_objfile(
     let strtab_adj = strtab.data.len();
     strtab.data.extend(&asm_objfile.sym_strtab().data);
 
-    // Find relocated symbols
-    let mut relocated_symbols = vec![];
+    // Find relocated symbols in asm_objfile
+    let mut relocated_symbols = HashSet::new();
     for sectype in INPUT_SECTION_NAMES.iter() {
         if let Some(sec) = asm_objfile.find_section(sectype) {
             for reltab_idx in &sec.relocated_by {
                 let reltab = &asm_objfile.sections[*reltab_idx];
                 for rel in &reltab.relocations {
-                    relocated_symbols
-                        .push(asm_objfile.symtab().symbol_entries[rel.sym_index].clone());
+                    relocated_symbols.insert(rel.sym_index);
                 }
             }
         }
@@ -967,11 +966,11 @@ pub(crate) fn fixup_objfile(
 
     for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
         let is_local = i < asm_objfile.symtab().header.sh_info as usize;
-        if is_local && !relocated_symbols.contains(s) {
+        if is_local && !relocated_symbols.contains(&i) {
             continue;
         }
         if s.borrow().name.starts_with(b"_asmpp_") {
-            assert!(!relocated_symbols.contains(s));
+            assert!(!relocated_symbols.contains(&i));
             continue;
         }
         if s.borrow().st_shndx != SHN_UNDEF && s.borrow().st_shndx != SHN_ABS {
