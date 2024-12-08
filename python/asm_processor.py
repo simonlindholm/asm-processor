@@ -274,14 +274,6 @@ class Section:
             entries.append(Relocation(self.fmt, self.data[i:i+self.sh_entsize], self.sh_type))
         self.relocations = entries
 
-    def local_symbols(self):
-        assert self.sh_type == SHT_SYMTAB
-        return self.symbol_entries[:self.sh_info]
-
-    def global_symbols(self):
-        assert self.sh_type == SHT_SYMTAB
-        return self.symbol_entries[self.sh_info:]
-
     def relocate_mdebug(self, original_offset):
         assert self.sh_type == SHT_MIPS_DEBUG
         new_data = bytearray(self.data)
