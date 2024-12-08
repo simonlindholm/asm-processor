@@ -267,7 +267,6 @@ struct Section {
     data: Vec<u8>,
     index: usize,
     relocated_by: Vec<usize>,
-    symbol_entries: Vec<Symbol>,
     relocations: Vec<Relocation>,
     name: String,
 }
@@ -293,7 +292,6 @@ impl Section {
             data,
             index,
             relocated_by: vec![],
-            symbol_entries: vec![],
             relocations: vec![],
             name: "".into(),
         })
@@ -363,36 +361,6 @@ impl Section {
         rv
     }
 
-    fn find_symbol(&self, name: &[u8]) -> Option<(usize, usize)> {
-        assert_eq!(self.header.sh_type, SHT_SYMTAB);
-        for s in &self.symbol_entries {
-            if s.name == name {
-                return Some((s.st_shndx, s.st_value));
-            }
-        }
-        None
-    }
-
-    fn find_symbol_in_section(&self, name: &[u8], section: &Section) -> usize {
-        let Some((st_shndx, st_value)) = self.find_symbol(name) else {
-            panic!("failed to find symbol: {}", String::from_utf8_lossy(name));
-        };
-        if st_shndx != section.index {
-            panic!("symbol {} is in wrong section", String::from_utf8_lossy(name));
-        }
-        st_value
-    }
-
-    fn init_symbols(&mut self, strtab: &Section, endian: Endian) {
-        assert_eq!(self.header.sh_type, SHT_SYMTAB);
-        assert_eq!(self.header.sh_entsize, 16);
-
-        for i in 0..(self.data.len() / 16) {
-            let symbol = Symbol::new(&self.data[i * 16..(i + 1) * 16], strtab, endian).unwrap();
-            self.symbol_entries.push(symbol);
-        }
-    }
-
     fn init_relocs(&mut self, endian: Endian) {
         assert!(self.is_rel());
 
@@ -448,6 +416,7 @@ struct ElfFile {
     endian: Endian,
     header: ElfHeader,
     sections: Vec<Section>,
+    symbol_entries: Vec<Symbol>,
     symtab: usize,
     sym_strtab: usize,
 }
@@ -496,17 +465,18 @@ impl ElfFile {
             .expect("missing symtab");
         let sym_strtab_index = sections[symtab_index].header.sh_link as usize;
 
+        let symtab = &sections[symtab_index];
+        let sym_strtab = &sections[sym_strtab_index];
+        let symbol_entries = ElfFile::init_symbols(symtab, sym_strtab, endian);
+
         let shstr = sections[header.e_shstrndx as usize].clone();
-        let sym_strtab = sections[sym_strtab_index].clone();
 
         for i in 0..sections.len() {
             let s = &mut sections[i];
             s.name = String::from_utf8(shstr.lookup_str(s.header.sh_name as usize)).unwrap();
             assert!(s.name.is_ascii());
 
-            if s.header.sh_type == SHT_SYMTAB {
-                s.init_symbols(&sym_strtab, endian);
-            } else if s.is_rel() {
+            if s.is_rel() {
                 let target_index = s.header.sh_info as usize;
                 s.init_relocs(endian);
                 sections[target_index].relocated_by.push(i);
@@ -518,6 +488,7 @@ impl ElfFile {
             endian,
             header,
             sections,
+            symbol_entries,
             symtab: symtab_index,
             sym_strtab: sym_strtab_index,
         })
@@ -545,6 +516,39 @@ impl ElfFile {
 
     fn sym_strtab_mut(&mut self) -> &mut Section {
         &mut self.sections[self.sym_strtab]
+    }
+
+    fn init_symbols(symtab: &Section, strtab: &Section, endian: Endian) -> Vec<Symbol> {
+        assert_eq!(symtab.header.sh_type, SHT_SYMTAB);
+        assert_eq!(symtab.header.sh_entsize, 16);
+
+        let mut syms = Vec::new();
+        for i in 0..(symtab.data.len() / 16) {
+            syms.push(Symbol::new(&symtab.data[i * 16..(i + 1) * 16], strtab, endian).unwrap());
+        }
+        syms
+    }
+
+    fn find_symbol(&self, name: &[u8]) -> Option<(usize, usize)> {
+        for s in &self.symbol_entries {
+            if s.name == name {
+                return Some((s.st_shndx, s.st_value));
+            }
+        }
+        None
+    }
+
+    fn find_symbol_in_section(&self, name: &[u8], section: &Section) -> usize {
+        let Some((st_shndx, st_value)) = self.find_symbol(name) else {
+            panic!("failed to find symbol: {}", String::from_utf8_lossy(name));
+        };
+        if st_shndx != section.index {
+            panic!(
+                "symbol {} is in wrong section",
+                String::from_utf8_lossy(name)
+            );
+        }
+        st_value
     }
 
     fn add_section(&mut self, name: &str, fields: &HeaderFields, data: &[u8], endian: Endian) {
@@ -669,7 +673,7 @@ pub(crate) fn fixup_objfile(
             if size == 0 {
                 panic!("Size of section {} is 0", sectype.as_str());
             }
-            let Some((_, loc)) = objfile.symtab().find_symbol(temp_name.as_bytes()) else {
+            let Some((_, loc)) = objfile.find_symbol(temp_name.as_bytes()) else {
                 ifdefed = true;
                 break;
             };
@@ -817,10 +821,8 @@ pub(crate) fn fixup_objfile(
         } in to_copy[sectype].iter()
         {
             let loc1 = asm_objfile
-                .symtab()
                 .find_symbol_in_section(format!("{}_asm_start", &temp_name).as_bytes(), source);
             let loc2 = asm_objfile
-                .symtab()
                 .find_symbol_in_section(format!("{}_asm_end", &temp_name).as_bytes(), source);
             if loc1 != loc {
                 panic!(
@@ -872,12 +874,10 @@ pub(crate) fn fixup_objfile(
         let target = objfile
             .find_section_mut(".rodata")
             .expect(".rodata target section should exist");
-        let mut source_pos = asm_objfile
-            .symtab()
-            .find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source);
-        let source_end = asm_objfile
-            .symtab()
-            .find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source);
+        let mut source_pos =
+            asm_objfile.find_symbol_in_section(late_rodata_source_name_start.as_bytes(), source);
+        let source_end =
+            asm_objfile.find_symbol_in_section(late_rodata_source_name_end.as_bytes(), source);
         let num_dummies: usize = all_late_rodata_dummy_bytes.iter().map(|x| x.len()).sum();
         let expected_size = num_dummies * 4 + all_jtbl_rodata_size.iter().sum::<usize>();
 
@@ -964,9 +964,8 @@ pub(crate) fn fixup_objfile(
     // Move over symbols, deleting the temporary function labels.
     // Skip over new local symbols that aren't relocated against, to
     // avoid conflicts.
-    let empty_symbol = objfile.symtab().symbol_entries[0].clone();
+    let empty_symbol = objfile.symbol_entries[0].clone();
     let mut new_syms: Vec<(Symbol, Vec<SymInd>)> = objfile
-        .symtab()
         .symbol_entries
         .iter()
         .enumerate()
@@ -976,7 +975,7 @@ pub(crate) fn fixup_objfile(
         .map(|(x, inds)| (x.clone(), inds))
         .collect();
 
-    for (i, s) in asm_objfile.symtab().symbol_entries.iter().enumerate() {
+    for (i, s) in asm_objfile.symbol_entries.iter().enumerate() {
         let is_local = i < asm_objfile.symtab().header.sh_info as usize;
         if is_local && !relocated_symbols.contains(&i) {
             continue;

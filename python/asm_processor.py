@@ -245,28 +245,6 @@ class Section:
             self.sh_size = len(self.data)
         return self.fmt.pack('IIIIIIIIII', self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize)
 
-    def find_symbol(self, name):
-        assert self.sh_type == SHT_SYMTAB
-        for s in self.symbol_entries:
-            if s.name == name:
-                return (s.st_shndx, s.st_value)
-        return None
-
-    def find_symbol_in_section(self, name, section):
-        pos = self.find_symbol(name)
-        assert pos is not None
-        assert pos[0] == section.index
-        return pos[1]
-
-    def init_symbols(self, sections):
-        assert self.sh_type == SHT_SYMTAB
-        assert self.sh_entsize == 16
-        self.strtab = sections[self.sh_link]
-        entries = []
-        for i in range(0, self.sh_size, self.sh_entsize):
-            entries.append(Symbol(self.fmt, self.data[i:i+self.sh_entsize], self.strtab))
-        self.symbol_entries = entries
-
     def init_relocs(self):
         assert self.is_rel()
         entries = []
@@ -336,16 +314,36 @@ class ElfFile:
                 symtab = s
         assert symtab is not None
         self.symtab = symtab
+        self.sym_strtab = self.sections[symtab.sh_link]
+        self.symbol_entries = ElfFile.init_symbols(symtab, self.sym_strtab)
 
         shstr = self.sections[self.elf_header.e_shstrndx]
         for s in self.sections:
             s.name = shstr.lookup_str(s.sh_name)
-            if s.sh_type == SHT_SYMTAB:
-                s.init_symbols(self.sections)
-            elif s.is_rel():
+            if s.is_rel():
                 self.sections[s.sh_info].relocated_by.append(s)
                 s.init_relocs()
 
+    @staticmethod
+    def init_symbols(symtab, strtab):
+        assert symtab.sh_type == SHT_SYMTAB
+        assert symtab.sh_entsize == 16
+        syms = []
+        for i in range(0, symtab.sh_size, symtab.sh_entsize):
+            syms.append(Symbol(symtab.fmt, symtab.data[i:i+symtab.sh_entsize], strtab))
+        return syms
+
+    def find_symbol(self, name):
+        for s in self.symbol_entries:
+            if s.name == name:
+                return (s.st_shndx, s.st_value)
+        return None
+
+    def find_symbol_in_section(self, name, section):
+        pos = self.find_symbol(name)
+        assert pos is not None
+        assert pos[0] == section.index
+        return pos[1]
 
     def find_section(self, name):
         for s in self.sections:
@@ -1078,7 +1076,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             if temp_name is None:
                 continue
             assert size > 0
-            loc = objfile.symtab.find_symbol(temp_name)
+            loc = objfile.find_symbol(temp_name)
             if loc is None:
                 ifdefed = True
                 break
@@ -1172,8 +1170,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             source = asm_objfile.find_section(sectype)
             assert source is not None, "didn't find source section: " + sectype
             for (pos, count, temp_name, fn_desc) in to_copy[sectype]:
-                loc1 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_start', source)
-                loc2 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_end', source)
+                loc1 = asm_objfile.find_symbol_in_section(temp_name + '_asm_start', source)
+                loc2 = asm_objfile.find_symbol_in_section(temp_name + '_asm_end', source)
                 assert loc1 == pos, "assembly and C files don't line up for section " + sectype + ", " + fn_desc
                 if loc2 - loc1 != count:
                     raise Failure("incorrectly computed size for section " + sectype + ", " + fn_desc + ". If using .double, make sure to provide explicit alignment padding.")
@@ -1199,8 +1197,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         if any(all_late_rodata_dummy_bytes) or any(all_jtbl_rodata_size):
             source = asm_objfile.find_section('.late_rodata')
             target = objfile.find_section('.rodata')
-            source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
-            source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
+            source_pos = asm_objfile.find_symbol_in_section(late_rodata_source_name_start, source)
+            source_end = asm_objfile.find_symbol_in_section(late_rodata_source_name_end, source)
             if source_end - source_pos != sum(map(len, all_late_rodata_dummy_bytes)) * 4 + sum(all_jtbl_rodata_size):
                 raise Failure("computed wrong size of .late_rodata")
             new_data = list(target.data)
@@ -1238,8 +1236,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             target.data = bytes(new_data)
 
         # Merge strtab data.
-        strtab_adj = len(objfile.symtab.strtab.data)
-        objfile.symtab.strtab.data += asm_objfile.symtab.strtab.data
+        strtab_adj = len(objfile.sym_strtab.data)
+        objfile.sym_strtab.data += asm_objfile.sym_strtab.data
 
         # Find relocated symbols
         relocated_symbols = set()
@@ -1249,15 +1247,15 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 continue
             for reltab in sec.relocated_by:
                 for rel in reltab.relocations:
-                    relocated_symbols.add(asm_objfile.symtab.symbol_entries[rel.sym_index])
+                    relocated_symbols.add(asm_objfile.symbol_entries[rel.sym_index])
 
         # Move over symbols, deleting the temporary function labels.
         # Skip over new local symbols that aren't relocated against, to
         # avoid conflicts.
-        empty_symbol = objfile.symtab.symbol_entries[0]
-        new_syms = [s for s in objfile.symtab.symbol_entries[1:] if not is_temp_name(s.name)]
+        empty_symbol = objfile.symbol_entries[0]
+        new_syms = [s for s in objfile.symbol_entries[1:] if not is_temp_name(s.name)]
 
-        for i, s in enumerate(asm_objfile.symtab.symbol_entries):
+        for i, s in enumerate(asm_objfile.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
                 continue
@@ -1296,7 +1294,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         if mdebug_section and convert_statics != "no":
             static_name_count = {}
-            strtab_index = len(objfile.symtab.strtab.data)
+            strtab_index = len(objfile.sym_strtab.data)
             new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
             cb_sym_offset, = fmt.unpack('I', mdebug_section.data[9*4 : 10*4])
@@ -1339,7 +1337,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             st_info=(binding << 4 | symtype),
                             st_other=STV_DEFAULT,
                             st_shndx=section.index,
-                            strtab=objfile.symtab.strtab,
+                            strtab=objfile.sym_strtab,
                             name=symbol_name.decode('latin1'))
                         strtab_index += len(emitted_symbol_name) + 1
                         new_strtab_data.append(emitted_symbol_name + b'\0')
@@ -1357,7 +1355,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     if st == MIPS_DEBUG_ST_END:
                         scope_level -= 1
                 assert scope_level == 0
-            objfile.symtab.strtab.data += b''.join(new_strtab_data)
+            objfile.sym_strtab.data += b''.join(new_strtab_data)
 
         # Get rid of duplicate symbols, favoring ones that are not UNDEF.
         # Skip this for unnamed local symbols though.
@@ -1414,7 +1412,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             sectype == '.rodata' and rel.r_offset in jtbl_rodata_positions):
                             # don't include relocations for late_rodata dummy code
                             continue
-                        rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
+                        rel.sym_index = objfile.symbol_entries[rel.sym_index].new_index
                         nrels.append(rel)
                     reltab.relocations = nrels
                     reltab.data = b''.join(rel.to_bin() for rel in nrels)
@@ -1430,7 +1428,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             assert target is not None, target_sectype
             for reltab in source.relocated_by:
                 for rel in reltab.relocations:
-                    rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
+                    rel.sym_index = asm_objfile.symbol_entries[rel.sym_index].new_index
                     if sectype == '.late_rodata':
                         rel.r_offset = moved_late_rodata[rel.r_offset]
                 new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
