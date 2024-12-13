@@ -935,8 +935,9 @@ def parse_source(f, opts, out_dependencies, print_source=None):
 
     global_asm = None
     asm_functions = []
+    base_fname = f.name
     output_lines = [
-        '#line 1 "' + f.name + '"'
+        '#line 1 "' + base_fname + '"'
     ]
 
     is_cutscene_data = False
@@ -992,7 +993,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
                 # error. Pass the responsibility for determining that on to the
                 # compiler by emitting a bad include directive. (IDO treats
                 # #error as a warning for some reason.)
-                output_lines[-1] = f"#include \"GLOBAL_ASM:{fname}\""
+                output_lines[-1] = '#include "GLOBAL_ASM:' + fname + '"'
                 continue
             with f:
                 for line2 in f:
@@ -1011,14 +1012,14 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             # Previous line was a #pragma asmproc recurse
             is_early_include = False
             if not line.startswith("#include "):
-                raise Failure("#pragma asmproc recurse must be followed by an #include ")
-            fpath = os.path.dirname(f.name)
+                raise Failure("#pragma asmproc recurse must be followed by an #include")
+            fpath = os.path.dirname(base_fname)
             fname = os.path.join(fpath, line[line.index(' ') + 2 : -1])
             out_dependencies.append(fname)
             include_src = StringIO()
             with open(fname, encoding=opts.input_enc) as include_file:
                 parse_source(include_file, opts, out_dependencies, include_src)
-            include_src.write('#line ' + str(line_no + 1) + ' "' + f.name + '"')
+            include_src.write('#line ' + str(line_no + 1) + ' "' + base_fname + '"')
             output_lines[-1] = include_src.getvalue()
             include_src.close()
         else:
