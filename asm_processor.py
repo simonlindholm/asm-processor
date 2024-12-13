@@ -744,7 +744,7 @@ class GlobalAsmBlock:
                         size - i >= jtbl_min_rodata_size and
                         num_instr - len(late_rodata_fn_output) >= jtbl_size + 1):
                     if state.pascal:
-                        cases = " ".join("{}: ;".format(case) for case in range(size - i))
+                        cases = "\n".join("{}: ;".format(case) for case in range(size - i))
                         line = "case 0 of " + cases + " otherwise end;"
                     else:
                         cases = " ".join("case {}:".format(case) for case in range(size - i))
@@ -955,6 +955,11 @@ def parse_source(f, opts, out_dependencies, print_source=None):
         if global_asm is not None:
             if line.startswith(')'):
                 src, fn = global_asm.finish(state)
+                if state.pascal:
+                    # Pascal has a 1600-character line length limit, so some
+                    # of the lines we emit may be broken up. Correct for that
+                    # using a #line directive.
+                    src[-1] += '\n#line ' + str(line_no + 1)
                 for i, line2 in enumerate(src):
                     output_lines[start_index + i] = line2
                 asm_functions.append(fn)
@@ -999,7 +1004,13 @@ def parse_source(f, opts, out_dependencies, print_source=None):
                 for line2 in f:
                     ext_global_asm.process_line(line2.rstrip(), output_enc)
             src, fn = ext_global_asm.finish(state)
-            output_lines[-1] = ''.join(src)
+            if state.pascal:
+                # Pascal has a 1600-character line length limit, so avoid putting
+                # everything on the same line.
+                src.append('#line ' + str(line_no + 1))
+                output_lines[-1] = '\n'.join(src)
+            else:
+                output_lines[-1] = ''.join(src)
             asm_functions.append(fn)
             out_dependencies.append(fname)
         elif line == '#pragma asmproc recurse':
