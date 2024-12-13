@@ -524,7 +524,7 @@ impl GlobalAsmBlock {
                         let cases: String = (0..(size - i))
                             .map(|case| format!("{}: ;", case))
                             .collect::<Vec<String>>()
-                            .join(" ");
+                            .join("\n");
                         format!("case 0 of {} otherwise end;", cases)
                     } else {
                         let cases: String = (0..(size - i))
@@ -807,7 +807,13 @@ pub(crate) fn parse_source(
 
         if let Some((ref mut gasm, start_index)) = global_asm {
             if line.starts_with(')') {
-                let (src, fun) = gasm.finish(&mut state)?;
+                let (mut src, fun) = gasm.finish(&mut state)?;
+                if state.pascal {
+                    // Pascal has a 1600-character line length limit, so some
+                    // of the lines we emit may be broken up. Correct for that
+                    // using a #line directive.
+                    *src.last_mut().unwrap() += &format!("\n#line {}", line_no + 1);
+                }
                 for (i, line2) in src.iter().enumerate() {
                     output_lines[start_index + i] = line2.clone();
                 }
@@ -867,9 +873,16 @@ pub(crate) fn parse_source(
                 gasm.process_line(line2.trim_end(), output_enc)?;
             }
 
-            let (src, fun) = gasm.finish(&mut state)?;
+            let (mut src, fun) = gasm.finish(&mut state)?;
             let output_lines_len = output_lines.len();
-            output_lines[output_lines_len - 1] = src.join("");
+            if state.pascal {
+                // Pascal has a 1600-character line length limit, so avoid putting
+                // everything on the same line.
+                src.push(format!("#line {}", line_no + 1));
+                output_lines[output_lines_len - 1] = src.join("\n");
+            } else {
+                output_lines[output_lines_len - 1] = src.join("");
+            }
             asm_functions.push(fun);
             deps.push(fname);
         } else if line == "#pragma asmproc recurse" {
