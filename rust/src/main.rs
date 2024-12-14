@@ -42,6 +42,20 @@ impl Encoding {
         }
         Err(anyhow::anyhow!("Failed to encode string: {}", s))
     }
+
+    fn decode<'a>(&self, bytes: &'a [u8]) -> Result<Cow<'a, str>> {
+        match self {
+            Encoding::Latin1 => Ok(encoding_rs::mem::decode_latin1(bytes)),
+            Encoding::Custom(enc) => {
+                let (ret, _, failed) = enc.decode(bytes);
+                if !failed {
+                    Ok(ret)
+                } else {
+                    Err(anyhow::anyhow!("Failed to decode string: {}", ret))
+                }
+            }
+        }
+    }
 }
 
 impl FromStr for Encoding {

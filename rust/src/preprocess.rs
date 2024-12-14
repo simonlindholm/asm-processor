@@ -1,4 +1,4 @@
-use std::{fs::read_to_string, io::Write, iter, path::Path, sync::OnceLock};
+use std::{fs, io::Write, iter, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use enum_map::{Enum, EnumMap};
@@ -789,6 +789,7 @@ pub(crate) fn parse_source(
         args.mips1,
         args.pascal,
     );
+    let input_enc = &args.input_enc;
     let output_enc = &args.output_enc;
     let mut global_asm: Option<(GlobalAsmBlock, usize)> = None;
     let mut asm_functions: Vec<Function> = vec![];
@@ -801,7 +802,8 @@ pub(crate) fn parse_source(
     let cutscene_re = Regex::new(r"CutsceneData (.|\n)*\[\] = \{")?;
     let float_re = Regex::new(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")?;
 
-    for (line_no, line) in read_to_string(infile_path)?.lines().enumerate() {
+    let file_contents = fs::read(infile_path)?;
+    for (line_no, line) in input_enc.decode(&file_contents)?.lines().enumerate() {
         let line_no = line_no + 1;
         let mut raw_line = line.trim().to_owned();
         let line = raw_line.trim_start();
@@ -875,7 +877,8 @@ pub(crate) fn parse_source(
                 continue;
             }
 
-            for line2 in read_to_string(&fname)?.lines() {
+            let file_contents = fs::read(&fname)?;
+            for line2 in input_enc.decode(&file_contents)?.lines() {
                 gasm.process_line(line2.trim_end(), output_enc)?;
             }
 
