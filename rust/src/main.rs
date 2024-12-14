@@ -5,7 +5,7 @@ use std::{
     borrow::Cow,
     fmt::{Debug, Display},
     fs::{self, File},
-    io::{stdout, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     str::FromStr,
@@ -59,7 +59,7 @@ impl FromStr for Encoding {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, ValueEnum)]
 enum SymbolVisibility {
     No,
     #[default]
@@ -82,13 +82,6 @@ enum OptLevel {
 struct AsmProcArgs {
     /// path to .c code
     filename: PathBuf,
-
-    /// path to .o file to post-process
-    #[clap(required = false)]
-    post_process: Option<PathBuf>,
-
-    /// assembler command (e.g. "mips-linux-gnu-as -march=vr4300 -mabi=32")
-    assembler: Option<String>,
 
     /// path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)
     #[clap(long)]
@@ -171,72 +164,6 @@ struct Function {
     late_rodata_asm_conts: Vec<String>,
     fn_desc: String,
     data: EnumMap<OutputSection, (Option<String>, usize)>,
-}
-
-#[derive(Default)]
-struct RunResult {
-    functions: Vec<Function>,
-    deps: Vec<String>,
-    output: Vec<u8>,
-}
-
-fn run(
-    args: &AsmProcArgs,
-    mut outfile: impl Write,
-    in_functions: Option<&[Function]>,
-    use_default_asm_prelude: bool,
-) -> Result<RunResult> {
-    if args.post_process.is_none() {
-        let res: RunResult = parse_source(&args.filename, args, true)?;
-        outfile.write_all(&res.output)?;
-        return Ok(res);
-    } else {
-        let objfile = args.post_process.clone().unwrap();
-
-        let assembler = args
-            .assembler
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Assembler command is required when post-processing"))?;
-
-        let functions = if let Some(funcs) = in_functions {
-            funcs.to_vec()
-        } else {
-            let res = parse_source(&args.filename, args, true)?;
-            res.functions
-        };
-
-        if (functions.is_empty()) && !args.force {
-            return Ok(RunResult::default());
-        }
-
-        let asm_prelude = if use_default_asm_prelude {
-            include_str!("../../prelude.inc").to_string()
-        } else {
-            match &args.asm_prelude {
-                Some(prelude) => {
-                    let res = fs::read_to_string(prelude);
-                    if let Ok(res) = res {
-                        res
-                    } else {
-                        return Err(anyhow::anyhow!("Failed to read asm prelude"));
-                    }
-                }
-                None => String::new(),
-            }
-        };
-
-        fixup_objfile(
-            &objfile,
-            &functions,
-            &asm_prelude,
-            assembler,
-            &args.output_enc,
-            args.drop_mdebug_gptab,
-            args.convert_statics.clone().unwrap(),
-        )?;
-    }
-
-    Ok(RunResult::default())
 }
 
 fn parse_args(args: &[String], compile_args: &[String]) -> Result<AsmProcArgs> {
@@ -368,9 +295,10 @@ fn main() -> Result<()> {
         in_file.file_name().unwrap().to_str().unwrap()
     );
     let preprocessed_path = temp_dir.path().join(&preprocessed_filename);
-    let preprocessed_file = File::create(&preprocessed_path)?;
+    let mut preprocessed_file = File::create(&preprocessed_path)?;
 
-    let res = run(&args, preprocessed_file, None, false)?;
+    let res = parse_source(&args.filename, &args, true)?;
+    preprocessed_file.write_all(&res.output)?;
 
     if keep_preprocessed_files {
         let kept_files_path = Path::new("asm_processor_preprocessed");
@@ -413,13 +341,30 @@ fn main() -> Result<()> {
         ));
     }
 
-    let new_args = AsmProcArgs {
-        post_process: Some(out_file.to_path_buf()),
-        assembler: Some(assembler_sh),
-        ..args
-    };
+    if !res.functions.is_empty() || args.force {
+        let prelude_str;
+        let asm_prelude = match &args.asm_prelude {
+            Some(prelude) => {
+                if let Ok(res) = fs::read_to_string(prelude) {
+                    prelude_str = res;
+                    &prelude_str
+                } else {
+                    return Err(anyhow::anyhow!("Failed to read asm prelude"));
+                }
+            }
+            None => include_str!("../../prelude.inc"),
+        };
 
-    run(&new_args, stdout(), Some(&res.functions), true)?;
+        fixup_objfile(
+            out_file,
+            &res.functions,
+            asm_prelude,
+            &assembler_sh,
+            &args.output_enc,
+            args.drop_mdebug_gptab,
+            args.convert_statics.unwrap(),
+        )?;
+    }
 
     if !res.deps.is_empty() {
         let deps_file = out_file.with_extension("asmproc.d");

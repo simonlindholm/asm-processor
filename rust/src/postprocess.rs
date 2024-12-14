@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{self, BufWriter, Cursor, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::Path,
     process::Command,
 };
 
@@ -617,7 +617,7 @@ impl ElfFile {
 }
 
 pub(crate) fn fixup_objfile(
-    objfile_path: &PathBuf,
+    objfile_path: &Path,
     functions: &[Function],
     asm_prelude: &str,
     assembler: &str,

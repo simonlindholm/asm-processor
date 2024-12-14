@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use enum_map::{Enum, EnumMap};
 use regex_lite::Regex;
 
-use crate::{AsmProcArgs, Encoding, Function, OptLevel, OutputSection, RunResult};
+use crate::{AsmProcArgs, Encoding, Function, OptLevel, OutputSection};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
 enum InputSection {
@@ -730,11 +730,17 @@ fn repl_float_hex(cap: &regex_lite::Captures) -> String {
     format!("{}", u32::from_be_bytes(hex_val))
 }
 
+pub(crate) struct ParseSourceResult {
+    pub functions: Vec<Function>,
+    pub deps: Vec<String>,
+    pub output: Vec<u8>,
+}
+
 pub(crate) fn parse_source(
     infile_path: &Path,
     args: &AsmProcArgs,
     encode: bool,
-) -> Result<RunResult> {
+) -> Result<ParseSourceResult> {
     let (mut min_instr_count, mut skip_instr_count) = match (args.opt.clone(), args.g3) {
         (OptLevel::O0, false) => match args.framepointer {
             true => (8, 8),
@@ -948,7 +954,7 @@ pub(crate) fn parse_source(
         str.as_bytes().to_vec()
     };
 
-    Ok(RunResult {
+    Ok(ParseSourceResult {
         functions: asm_functions,
         deps,
         output: out_data,
