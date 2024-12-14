@@ -111,22 +111,22 @@ impl GlobalState {
         }
     }
 
-    fn pascal_assignment_float(&mut self, tp: &str, val: f32) -> String {
+    fn pascal_assignment_float(&mut self, val: f32) -> String {
         self.valuectr += 1;
         let address = (8 * self.valuectr) & 0x7FFF;
-        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
+        format!("vf := pf({}); vf^ := {:?};", address, val)
     }
 
-    fn pascal_assignment_double(&mut self, tp: &str, val: f64) -> String {
+    fn pascal_assignment_double(&mut self, val: f64) -> String {
         self.valuectr += 1;
         let address = (8 * self.valuectr) & 0x7FFF;
-        format!("v{} := p{}({}); v{}^ := {:?};", tp, tp, address, tp, val)
+        format!("vd := pd({}); vd^ := {:?};", address, val)
     }
 
-    fn pascal_assignment_int(&mut self, tp: &str, val: i32) -> String {
+    fn pascal_assignment_int(&mut self, val: i32) -> String {
         self.valuectr += 1;
         let address = (8 * self.valuectr) & 0x7FFF;
-        format!("v{} := p{}({}); v{}^ := {};", tp, tp, address, tp, val)
+        format!("vi := pi({}); vi^ := {};", address, val)
     }
 }
 
@@ -548,7 +548,7 @@ impl GlobalAsmBlock {
                     let combined = [dummy_bytes, dummy_bytes2].concat().try_into().unwrap();
                     let fval = f64::from_be_bytes(combined);
                     let line = if state.pascal {
-                        state.pascal_assignment_double("d", fval)
+                        state.pascal_assignment_double(fval)
                     } else {
                         format!("*(volatile double*)0 = {:?};", fval)
                     };
@@ -564,7 +564,7 @@ impl GlobalAsmBlock {
                 } else {
                     let fval = f32::from_be_bytes(dummy_bytes);
                     let line = if state.pascal {
-                        state.pascal_assignment_float("f", fval)
+                        state.pascal_assignment_float(fval)
                     } else {
                         format!("*(volatile float*)0 = {:?}f;", fval)
                     };
@@ -633,7 +633,7 @@ impl GlobalAsmBlock {
                         if let Some(entry) = rodata_stack.pop() {
                             src[line] += &entry;
                         } else if state.pascal {
-                            src[line] += &state.pascal_assignment_int("i", 0);
+                            src[line] += &state.pascal_assignment_int(0);
                         } else {
                             src[line] += "*(volatile int*)0 = 0;";
                         }
