@@ -923,7 +923,7 @@ pub(crate) fn parse_source(
             let output_lines_len = output_lines.len();
             output_lines[output_lines_len - 1] = res_str;
         } else {
-            if args.encode_cutscene_data_float_encoding {
+            if args.encode_cutscene_data_floats {
                 // This is a hack to replace all floating-point numbers in an array of a particular type
                 // (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
                 if cutscene_re.is_match(line) {

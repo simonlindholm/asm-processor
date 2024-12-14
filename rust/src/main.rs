@@ -123,7 +123,7 @@ struct AsmProcArgs {
 
     /// Replace floats with their encoded hexadecimal representation in CutsceneData data
     #[clap(long)]
-    encode_cutscene_data_float_encoding: bool,
+    encode_cutscene_data_floats: bool,
 
     #[clap(long)]
     framepointer: bool,
