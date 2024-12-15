@@ -7,19 +7,19 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{exit, Command},
     str::FromStr,
 };
 
-use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use anyhow::Result;
+use argp::{FromArgs, HelpStyle};
 use enum_map::{Enum, EnumMap};
 use temp_dir::TempDir;
 
 use postprocess::fixup_objfile;
 use preprocess::parse_source;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Encoding {
     Latin1,
     Custom(&'static encoding_rs::Encoding),
@@ -73,75 +73,90 @@ impl FromStr for Encoding {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, ValueEnum)]
-enum SymbolVisibility {
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum ConvertStatics {
     No,
-    #[default]
     Local,
     Global,
     GlobalWithFilename,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+impl FromStr for ConvertStatics {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "no" => ConvertStatics::No,
+            "local" => ConvertStatics::Local,
+            "global" => ConvertStatics::Global,
+            "global-with-filename" => ConvertStatics::GlobalWithFilename,
+            _ => return Err("invalid value for symbol visibility".into()),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum OptLevel {
-    #[default]
     O0,
     O1,
     O2,
     G,
+    G3,
 }
 
-#[derive(Clone, Debug, Parser)]
-#[command(version, about, long_about = None)]
+/// Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IDO-compiled C.
+#[derive(FromArgs)]
 struct AsmProcArgs {
-    /// path to .c code
-    filename: PathBuf,
-
-    /// path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)
-    #[clap(long)]
+    /// Path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)
+    #[argp(option, arg_name = "FILE")]
     asm_prelude: Option<PathBuf>,
 
-    /// input encoding
-    #[clap(long, default_value = "latin1", required = false)]
+    /// Input encoding (default: latin1)
+    #[argp(
+        option,
+        default = "Encoding::Latin1",
+        from_str_fn(FromStr::from_str),
+        arg_name = "ENCODING"
+    )]
     input_enc: Encoding,
 
-    /// output encoding
-    #[clap(long, default_value = "latin1", required = false)]
+    /// Output encoding (default: latin1)
+    #[argp(
+        option,
+        default = "Encoding::Latin1",
+        from_str_fn(FromStr::from_str),
+        arg_name = "ENCODING"
+    )]
     output_enc: Encoding,
 
-    /// drop mdebug and gptab sections
-    #[clap(long)]
+    /// Drop mdebug and gptab sections
+    #[argp(switch)]
     drop_mdebug_gptab: bool,
 
-    /// change static symbol visibility
-    #[clap(long)]
-    convert_statics: Option<SymbolVisibility>,
+    /// Change symbol visibility for static variables. Mode must be one of:
+    /// no, local, global, global-with-filename (default: local)
+    #[argp(
+        option,
+        default = "ConvertStatics::Local",
+        from_str_fn(FromStr::from_str),
+        arg_name = "MODE"
+    )]
+    convert_statics: ConvertStatics,
 
-    /// force processing of files without GLOBAL_ASM blocks
-    #[clap(long)]
+    /// Force processing of files without GLOBAL_ASM blocks
+    #[argp(switch)]
     force: bool,
 
     /// Replace floats with their encoded hexadecimal representation in CutsceneData data
-    #[clap(long)]
+    #[argp(switch)]
     encode_cutscene_data_floats: bool,
 
-    #[clap(long)]
-    framepointer: bool,
-
-    #[clap(long)]
-    mips1: bool,
-
-    #[clap(long)]
-    g3: bool,
-
-    #[clap(long = "KPIC")]
-    kpic: bool,
-
-    #[clap(skip)]
-    opt: OptLevel,
-
-    #[clap(skip)]
-    pascal: bool,
+    #[argp(
+        positional,
+        greedy,
+        arg_name = "compiler... -- assembler... -- compiler flags"
+    )]
+    rest: Vec<String>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
@@ -180,124 +195,126 @@ struct Function {
     data: EnumMap<OutputSection, (Option<String>, usize)>,
 }
 
-fn parse_args(args: &[String], compile_args: &[String]) -> Result<AsmProcArgs> {
-    let mut args = AsmProcArgs::parse_from(args);
+struct CompileOpts {
+    out_file: PathBuf,
+    in_file: PathBuf,
+    opt: OptLevel,
+    framepointer: bool,
+    mips1: bool,
+    kpic: bool,
+    pascal: bool,
+}
 
-    for x in compile_args.iter().rev() {
-        match x.as_str() {
-            "-g" => {
-                args.opt = OptLevel::G;
-                break;
-            }
-            "-O0" => {
-                args.opt = OptLevel::O0;
-                break;
-            }
-            "-O1" => {
-                args.opt = OptLevel::O1;
-                break;
-            }
-            "-O2" => {
-                args.opt = OptLevel::O2;
-                break;
-            }
-            _ => {}
-        }
+fn parse_compile_args(compile_args: &[String]) -> Result<(CompileOpts, Vec<String>), &'static str> {
+    let mut compile_args: Vec<String> = compile_args.to_vec();
+    let out_ind = compile_args
+        .iter()
+        .position(|arg| arg == "-o")
+        .ok_or("missing -o argument")?;
+    let out_filename = compile_args
+        .get(out_ind + 1)
+        .ok_or("missing argument after -o")?
+        .clone();
+    compile_args.remove(out_ind + 1);
+    compile_args.remove(out_ind);
+
+    let in_file_str = compile_args
+        .last()
+        .ok_or("missing input file argument")?
+        .clone();
+    compile_args.pop();
+
+    let mut opt_flags = vec![];
+    for x in &compile_args {
+        opt_flags.push(match x.as_str() {
+            "-g" => OptLevel::G,
+            "-O0" => OptLevel::O0,
+            "-O1" => OptLevel::O1,
+            "-O2" => OptLevel::O2,
+            _ => continue,
+        });
     }
 
-    if !compile_args.contains(&"-mips2".to_string()) {
-        args.mips1 = true;
+    if opt_flags.len() != 1 {
+        return Err("exactly one of -g/-O0/-O1/-O2 must be passed");
     }
+    let mut opt = opt_flags[0];
 
+    let mips1 = !compile_args.contains(&"-mips2".to_string());
+    let framepointer = compile_args.contains(&"-framepointer".to_string());
+    let kpic = compile_args.contains(&"-KPIC".to_string());
     if compile_args.contains(&"-g3".to_string()) {
-        args.g3 = true;
-    }
-    if compile_args.contains(&"-framepointer".to_string()) {
-        args.framepointer = true;
-    }
-    if compile_args.contains(&"-KPIC".to_string()) {
-        args.kpic = true;
+        if opt != OptLevel::O2 {
+            return Err("-g3 is only supported together with -O2");
+        }
+        opt = OptLevel::G3;
     }
 
-    if args.convert_statics.is_none() {
-        args.convert_statics = Some(SymbolVisibility::Local);
+    if mips1 && (!matches!(opt, OptLevel::O1 | OptLevel::O2) || framepointer) {
+        return Err("-mips1 is only supported together with -O1 or -O2");
     }
 
-    if args.g3 && args.opt != OptLevel::O2 {
-        Err(anyhow::anyhow!("-g3 is only supported together with -O2"))
-            .context("Invalid arguments")?;
+    let pascal = in_file_str.ends_with(".p")
+        || in_file_str.ends_with(".pas")
+        || in_file_str.ends_with(".pp");
+
+    if pascal && !matches!(opt, OptLevel::O1 | OptLevel::O2 | OptLevel::G3) {
+        return Err("Pascal is only supported together with -O1, -O2 or -O2 -g3");
     }
 
-    if args.mips1 && (!(args.opt == OptLevel::O1 || args.opt == OptLevel::O2) || args.framepointer)
-    {
-        Err(anyhow::anyhow!(
-            "-mips1 is only supported together with -O1 or -O2"
-        ))
-        .context("Invalid arguments")?;
-    }
+    let out_file: PathBuf = out_filename.into();
+    let in_file: PathBuf = in_file_str.into();
 
-    let filename_str = args.filename.to_str().unwrap();
+    let args = CompileOpts {
+        out_file,
+        in_file,
+        opt,
+        framepointer,
+        mips1,
+        kpic,
+        pascal,
+    };
 
-    let is_pascal = filename_str.ends_with(".p")
-        || filename_str.ends_with(".pas")
-        || filename_str.ends_with(".pp");
+    Ok((args, compile_args))
+}
 
-    if is_pascal && !(args.opt == OptLevel::O1 || args.opt == OptLevel::O2 || args.g3) {
-        Err(anyhow::anyhow!(
-            "Pascal is only supported together with -O1, -O2 or -O2 -g3"
-        ))
-        .context("Invalid arguments")?;
-    }
-
-    args.pascal = is_pascal;
-
-    Ok(args)
+fn parse_rest(rest: &[String]) -> Option<(&[String], &[String], &[String])> {
+    let mut iter = rest.splitn(3, |x| *x == "--");
+    let compiler = iter.next()?;
+    let assembler = iter.next()?;
+    let compile_args = iter.next()?;
+    assert!(iter.next().is_none());
+    Some((compiler, assembler, compile_args))
 }
 
 fn main() -> Result<()> {
-    let os_args: Vec<String> = std::env::args().collect();
+    let args: AsmProcArgs = argp::parse_args_or_exit(&HelpStyle {
+        short_usage: true,
+        ..HelpStyle::default()
+    });
+    let Some((compiler, assembler, compile_args)) = parse_rest(&args.rest) else {
+        eprintln!(
+            "Usage: asm-processor [options] <compiler...> -- <assembler...> -- <compiler flags...>"
+        );
+        eprintln!("Run asm-processor --help for more information.");
+        exit(1);
+    };
 
-    let all_args = os_args[1..].to_vec();
-    let sep0 = all_args
-        .iter()
-        .position(|arg| !arg.starts_with('-'))
-        .expect("No first separator found");
-    let sep1 = all_args
-        .iter()
-        .position(|arg| arg == "--")
-        .expect("No first -- separator found");
-    let offset = sep1 + 1;
-    let sep2 = all_args[offset..]
-        .iter()
-        .position(|arg| arg == "--")
-        .expect("No second -- separator found")
-        + offset;
+    let (opts, compile_args) = parse_compile_args(compile_args).unwrap_or_else(|err| {
+        eprintln!("Failed to parse compiler flags: {}", err);
+        exit(1);
+    });
 
-    let mut asmproc_flags = Vec::from(&all_args[..sep0]);
-    let compiler = &all_args[sep0..sep1];
-    let assembler_args = &all_args[sep1 + 1..sep2];
-    let assembler_sh = assembler_args
+    let in_file = &opts.in_file;
+    let out_file = &opts.out_file;
+
+    let assembler_sh = assembler
         .iter()
         .map(|s| shlex::try_quote(s).unwrap().into_owned())
         .collect::<Vec<String>>()
         .join(" ");
-    let mut compile_args = Vec::from(&all_args[sep2 + 1..]);
-    let out_ind = compile_args
-        .iter()
-        .position(|arg| arg == "-o")
-        .expect("Missing -o argument");
-    let out_filename = &compile_args[out_ind + 1].clone();
-    let out_file = Path::new(out_filename);
-    compile_args.remove(out_ind + 1);
-    compile_args.remove(out_ind);
-    let in_file_str = compile_args.last().unwrap().clone();
-    compile_args.pop();
-    let in_file = Path::new(in_file_str.as_str());
-    let in_dir = fs::canonicalize(in_file.parent().unwrap().join("."))?;
 
-    asmproc_flags.push(in_file.to_str().unwrap().to_string());
-    asmproc_flags.insert(0, "clap is complicated".to_string());
-    let args = parse_args(&asmproc_flags, &compile_args)?;
+    let in_dir = fs::canonicalize(in_file.parent().unwrap().join("."))?;
 
     // Boolean for debugging purposes
     // Preprocessed files are temporary, set to True to keep a copy
@@ -311,7 +328,7 @@ fn main() -> Result<()> {
     let preprocessed_path = temp_dir.path().join(&preprocessed_filename);
     let mut preprocessed_file = File::create(&preprocessed_path)?;
 
-    let res = parse_source(&args.filename, &args, true)?;
+    let res = parse_source(in_file, &args, &opts, true)?;
     preprocessed_file.write_all(&res.output)?;
 
     if keep_preprocessed_files {
@@ -376,7 +393,7 @@ fn main() -> Result<()> {
             &assembler_sh,
             &args.output_enc,
             args.drop_mdebug_gptab,
-            args.convert_statics.unwrap(),
+            args.convert_statics,
         )?;
     }
 

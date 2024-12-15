@@ -12,7 +12,7 @@ use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
 use enum_map::EnumMap;
 use temp_dir::TempDir;
 
-use crate::{Encoding, Function, OutputSection, SymbolVisibility};
+use crate::{Encoding, Function, OutputSection, ConvertStatics};
 
 const EI_NIDENT: usize = 16;
 const EI_CLASS: usize = 4;
@@ -623,7 +623,7 @@ pub(crate) fn fixup_objfile(
     assembler: &str,
     output_enc: &Encoding,
     drop_mdebug_gptab: bool,
-    convert_statics: SymbolVisibility,
+    convert_statics: ConvertStatics,
 ) -> Result<()> {
     const OUTPUT_SECTIONS: [OutputSection; 4] = [
         OutputSection::Data,
@@ -1028,15 +1028,8 @@ pub(crate) fn fixup_objfile(
         new_syms.push((s, vec![SymInd::Asm(i)]));
     }
 
-    let make_statics_global = match convert_statics {
-        SymbolVisibility::No => false,
-        SymbolVisibility::Local => false,
-        SymbolVisibility::Global => true,
-        SymbolVisibility::GlobalWithFilename => true,
-    };
-
     // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
-    if mdebug_section.is_some() && convert_statics != SymbolVisibility::No {
+    if mdebug_section.is_some() && convert_statics != ConvertStatics::No {
         let mdebug_section = mdebug_section.unwrap();
         let mut static_name_count: HashMap<Vec<u8>, usize> = HashMap::new();
         let mut strtab_index = objfile.sym_strtab().data.len();
@@ -1083,7 +1076,7 @@ pub(crate) fn fixup_objfile(
                         symbol_name.extend(format!(":{}", count).as_bytes());
                     }
                     let mut emitted_symbol_name = symbol_name.clone();
-                    if convert_statics == SymbolVisibility::GlobalWithFilename {
+                    if convert_statics == ConvertStatics::GlobalWithFilename {
                         // Change the emitted symbol name to include the filename,
                         // but don't let that affect deduplication logic (we still
                         // want to be able to reference statics from GLOBAL_ASM).
@@ -1108,10 +1101,11 @@ pub(crate) fn fixup_objfile(
                         );
                     };
                     let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
-                    let binding = if make_statics_global {
-                        STB_GLOBAL
-                    } else {
-                        STB_LOCAL
+                    let binding = match convert_statics {
+                        ConvertStatics::Global | ConvertStatics::GlobalWithFilename => {
+                            STB_GLOBAL
+                        }
+                        _ => STB_LOCAL,
                     };
                     let sym = Symbol {
                         st_name: strtab_index,

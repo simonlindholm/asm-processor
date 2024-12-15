@@ -1,10 +1,10 @@
 use std::{fs, io::Write, iter, path::Path, sync::OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use enum_map::{Enum, EnumMap};
 use regex_lite::Regex;
 
-use crate::{AsmProcArgs, Encoding, Function, OptLevel, OutputSection};
+use crate::{AsmProcArgs, CompileOpts, Encoding, Function, OptLevel, OutputSection};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
 enum InputSection {
@@ -739,38 +739,33 @@ pub(crate) struct ParseSourceResult {
 pub(crate) fn parse_source(
     infile_path: &Path,
     args: &AsmProcArgs,
+    opts: &CompileOpts,
     encode: bool,
 ) -> Result<ParseSourceResult> {
-    let (mut min_instr_count, mut skip_instr_count) = match (args.opt.clone(), args.g3) {
-        (OptLevel::O0, false) => match args.framepointer {
+    let (mut min_instr_count, mut skip_instr_count) = match opts.opt {
+        OptLevel::O0 => match opts.framepointer {
             true => (8, 8),
             false => (4, 4),
         },
-        (OptLevel::O1, false) | (OptLevel::O2, false) => match args.framepointer {
+        OptLevel::O1 | OptLevel::O2 => match opts.framepointer {
             true => (6, 5),
             false => (2, 1),
         },
-        (OptLevel::G, false) => match args.framepointer {
+        OptLevel::G => match opts.framepointer {
             true => (7, 7),
             false => (4, 4),
         },
-        (OptLevel::O2, true) => match args.framepointer {
+        OptLevel::G3 => match opts.framepointer {
             true => (4, 4),
             false => (2, 2),
         },
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unsupported optimization level: -g3 can only be used with -O2"
-            ))
-            .context("Invalid arguments")
-        }
     };
 
     let mut prelude_if_late_rodata = 0;
-    if args.kpic {
+    if opts.kpic {
         // Without optimizations, the PIC prelude always takes up 3 instructions.
         // With optimizations, the prelude is optimized out if there's no late rodata.
-        if args.opt == OptLevel::O2 || args.g3 {
+        if matches!(opts.opt, OptLevel::O2 | OptLevel::G3) {
             prelude_if_late_rodata = 3;
         } else {
             min_instr_count += 3;
@@ -779,15 +774,15 @@ pub(crate) fn parse_source(
     }
 
     let use_jtbl_for_rodata =
-        (args.opt == OptLevel::O2 || args.g3) && !args.framepointer && !args.kpic;
+        matches!(opts.opt, OptLevel::O2 | OptLevel::G3) && !opts.framepointer && !opts.kpic;
 
     let mut state = GlobalState::new(
         min_instr_count,
         skip_instr_count,
         use_jtbl_for_rodata,
         prelude_if_late_rodata,
-        args.mips1,
-        args.pascal,
+        opts.mips1,
+        opts.pascal,
     );
     let input_enc = &args.input_enc;
     let output_enc = &args.output_enc;
@@ -911,7 +906,7 @@ pub(crate) fn parse_source(
             let fpath = infile_path.parent().unwrap();
             let fname = fpath.join(line[line.find(' ').unwrap() + 2..].trim());
             deps.push(fname.to_str().unwrap().to_string());
-            let mut res = parse_source(&fname, args, false)?;
+            let mut res = parse_source(&fname, args, opts, false)?;
             deps.append(&mut res.deps);
             let res_str = format!(
                 "{}#line {} \"{}\"",
