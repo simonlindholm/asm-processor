@@ -196,8 +196,6 @@ struct Function {
 }
 
 struct CompileOpts {
-    out_file: PathBuf,
-    in_file: PathBuf,
     opt: OptLevel,
     framepointer: bool,
     mips1: bool,
@@ -205,7 +203,9 @@ struct CompileOpts {
     pascal: bool,
 }
 
-fn parse_compile_args(compile_args: &[String]) -> Result<(CompileOpts, Vec<String>), &'static str> {
+fn extract_compiler_input_output(
+    compile_args: &[String],
+) -> Result<(PathBuf, PathBuf, Vec<String>), &'static str> {
     let mut compile_args: Vec<String> = compile_args.to_vec();
     let out_ind = compile_args
         .iter()
@@ -224,8 +224,18 @@ fn parse_compile_args(compile_args: &[String]) -> Result<(CompileOpts, Vec<Strin
         .clone();
     compile_args.pop();
 
+    let out_file: PathBuf = out_filename.into();
+    let in_file: PathBuf = in_file_str.into();
+
+    Ok((in_file, out_file, compile_args))
+}
+
+fn parse_compile_args(
+    compile_args: &[String],
+    in_file: &Path,
+) -> Result<CompileOpts, &'static str> {
     let mut opt_flags = vec![];
-    for x in &compile_args {
+    for x in compile_args {
         opt_flags.push(match x.as_str() {
             "-g" => OptLevel::G,
             "-O0" => OptLevel::O0,
@@ -254,6 +264,7 @@ fn parse_compile_args(compile_args: &[String]) -> Result<(CompileOpts, Vec<Strin
         return Err("-mips1 is only supported together with -O1 or -O2");
     }
 
+    let in_file_str = in_file.to_string_lossy();
     let pascal = in_file_str.ends_with(".p")
         || in_file_str.ends_with(".pas")
         || in_file_str.ends_with(".pp");
@@ -262,20 +273,13 @@ fn parse_compile_args(compile_args: &[String]) -> Result<(CompileOpts, Vec<Strin
         return Err("Pascal is only supported together with -O1, -O2 or -O2 -g3");
     }
 
-    let out_file: PathBuf = out_filename.into();
-    let in_file: PathBuf = in_file_str.into();
-
-    let args = CompileOpts {
-        out_file,
-        in_file,
+    Ok(CompileOpts {
         opt,
         framepointer,
         mips1,
         kpic,
         pascal,
-    };
-
-    Ok((args, compile_args))
+    })
 }
 
 fn parse_rest(rest: &[String]) -> Option<(&[String], &[String], &[String])> {
@@ -300,13 +304,16 @@ fn main() -> Result<()> {
         exit(1);
     };
 
-    let (opts, compile_args) = parse_compile_args(compile_args).unwrap_or_else(|err| {
-        eprintln!("Failed to parse compiler flags: {}", err);
+    let (in_file, out_file, compile_args) = extract_compiler_input_output(compile_args)
+        .unwrap_or_else(|err| {
+            eprintln!("Failed to parse compiler flags: {}", err);
+            exit(1);
+        });
+
+    let opts = parse_compile_args(&compile_args, &in_file).unwrap_or_else(|err| {
+        eprintln!("Unsupported compiler flags: {}", err);
         exit(1);
     });
-
-    let in_file = &opts.in_file;
-    let out_file = &opts.out_file;
 
     let assembler_sh = assembler
         .iter()
@@ -328,7 +335,7 @@ fn main() -> Result<()> {
     let preprocessed_path = temp_dir.path().join(&preprocessed_filename);
     let mut preprocessed_file = File::create(&preprocessed_path)?;
 
-    let res = parse_source(in_file, &args, &opts, true)?;
+    let res = parse_source(&in_file, &args, &opts, true)?;
     preprocessed_file.write_all(&res.output)?;
 
     if keep_preprocessed_files {
@@ -351,7 +358,7 @@ fn main() -> Result<()> {
         .arg("-I")
         .arg(in_dir)
         .arg("-o")
-        .arg(out_file)
+        .arg(&out_file)
         .arg(&preprocessed_path);
 
     let status = compile_command.status().unwrap_or_else(|_| {
@@ -387,7 +394,7 @@ fn main() -> Result<()> {
         };
 
         fixup_objfile(
-            out_file,
+            &out_file,
             &res.functions,
             asm_prelude,
             &assembler_sh,

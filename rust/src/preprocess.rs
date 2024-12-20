@@ -318,7 +318,8 @@ impl GlobalAsmBlock {
             self.text_glabels
                 .push(line.split_whitespace().nth(1).unwrap().to_string());
         }
-        if line.is_empty() { // empty line
+        if line.is_empty() {
+            // empty line
         } else if line.starts_with("glabel ")
             || line.starts_with("dlabel ")
             || line.starts_with("jlabel ")

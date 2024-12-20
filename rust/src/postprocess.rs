@@ -12,7 +12,7 @@ use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
 use enum_map::EnumMap;
 use temp_dir::TempDir;
 
-use crate::{Encoding, Function, OutputSection, ConvertStatics};
+use crate::{ConvertStatics, Encoding, Function, OutputSection};
 
 const EI_NIDENT: usize = 16;
 const EI_CLASS: usize = 4;
@@ -1102,9 +1102,7 @@ pub(crate) fn fixup_objfile(
                     };
                     let symtype = if sc == 1 { STT_FUNC } else { STT_OBJECT };
                     let binding = match convert_statics {
-                        ConvertStatics::Global | ConvertStatics::GlobalWithFilename => {
-                            STB_GLOBAL
-                        }
+                        ConvertStatics::Global | ConvertStatics::GlobalWithFilename => STB_GLOBAL,
                         _ => STB_LOCAL,
                     };
                     let sym = Symbol {
