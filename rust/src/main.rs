@@ -3,7 +3,7 @@ mod preprocess;
 
 use std::{
     borrow::Cow,
-    fmt::{Debug, Display},
+    fmt::Display,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -18,6 +18,42 @@ use temp_dir::TempDir;
 
 use postprocess::fixup_objfile;
 use preprocess::parse_source;
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
+enum OutputSection {
+    Text,
+    Data,
+    Rodata,
+    Bss,
+}
+
+impl OutputSection {
+    fn as_str(&self) -> &'static str {
+        match self {
+            OutputSection::Text => ".text",
+            OutputSection::Data => ".data",
+            OutputSection::Rodata => ".rodata",
+            OutputSection::Bss => ".bss",
+        }
+    }
+}
+
+impl Display for OutputSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Function {
+    text_glabels: Vec<String>,
+    asm_conts: Vec<String>,
+    late_rodata_dummy_bytes: Vec<[u8; 4]>,
+    jtbl_rodata_size: usize,
+    late_rodata_asm_conts: Vec<String>,
+    fn_desc: String,
+    data: EnumMap<OutputSection, (Option<String>, usize)>,
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Encoding {
@@ -157,42 +193,6 @@ struct AsmProcArgs {
         arg_name = "compiler... -- assembler... -- compiler flags"
     )]
     rest: Vec<String>,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
-enum OutputSection {
-    Text,
-    Data,
-    Rodata,
-    Bss,
-}
-
-impl OutputSection {
-    fn as_str(&self) -> &'static str {
-        match self {
-            OutputSection::Text => ".text",
-            OutputSection::Data => ".data",
-            OutputSection::Rodata => ".rodata",
-            OutputSection::Bss => ".bss",
-        }
-    }
-}
-
-impl Display for OutputSection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Function {
-    text_glabels: Vec<String>,
-    asm_conts: Vec<String>,
-    late_rodata_dummy_bytes: Vec<[u8; 4]>,
-    jtbl_rodata_size: usize,
-    late_rodata_asm_conts: Vec<String>,
-    fn_desc: String,
-    data: EnumMap<OutputSection, (Option<String>, usize)>,
 }
 
 struct CompileOpts {
