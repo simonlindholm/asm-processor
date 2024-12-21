@@ -3,6 +3,7 @@ mod preprocess;
 
 use std::{
     borrow::Cow,
+    ffi::OsString,
     fmt::Display,
     fs::{self, File},
     io::Write,
@@ -12,7 +13,7 @@ use std::{
 };
 
 use anyhow::Result;
-use argp::{FromArgs, HelpStyle};
+use argp::{EarlyExit, FromArgs, HelpStyle};
 use enum_map::{Enum, EnumMap};
 use temp_dir::TempDir;
 
@@ -187,11 +188,7 @@ struct AsmProcArgs {
     #[argp(switch)]
     encode_cutscene_data_floats: bool,
 
-    #[argp(
-        positional,
-        greedy,
-        arg_name = "compiler... -- assembler... -- compiler flags"
-    )]
+    #[argp(positional, greedy)]
     rest: Vec<String>,
 }
 
@@ -291,16 +288,87 @@ fn parse_rest(rest: &[String]) -> Option<(&[String], &[String], &[String])> {
     Some((compiler, assembler, compile_args))
 }
 
-fn main() -> Result<()> {
-    let args: AsmProcArgs = argp::parse_args_or_exit(&HelpStyle {
+struct ParsedArgs {
+    args: AsmProcArgs,
+    compiler: Vec<String>,
+    assembler: Vec<String>,
+    compile_args: Vec<String>,
+    in_file: PathBuf,
+    out_file: PathBuf,
+    opts: CompileOpts,
+}
+
+/// Parse command line arguments while allowing --a=b syntax.
+///
+/// This provides backward compatibility with Python argparse.
+fn from_args_allow_eq(progname: &[&str], args: &[OsString]) -> Result<AsmProcArgs, EarlyExit> {
+    let base_res = AsmProcArgs::from_args(progname, args);
+    if base_res.is_ok() {
+        return base_res;
+    }
+
+    // Try splitting up = chars successively, until we get a valid parse.
+    // This ensures we don't impact the compiler/assembler parts.
+    //
+    // Technically this might end up splitting --a --b=c into --a --b c even
+    // where --a is a flag that takes an argument --b=c, but this seems unlikely
+    // with our use case.
+    let mut i = 0;
+    let mut args = args.to_vec();
+    while i < args.len() {
+        let arg = args[i].as_encoded_bytes();
+        if arg.starts_with(b"--") {
+            if let Some(eq) = arg.iter().position(|&x| x == b'=') {
+                // SAFETY: splitting on ASCII still results in valid encoded bytes
+                let before = unsafe { OsString::from_encoded_bytes_unchecked(arg[0..eq].into()) };
+                let after = unsafe { OsString::from_encoded_bytes_unchecked(arg[eq + 1..].into()) };
+                args.splice(i..i + 1, [before, after]);
+                let new_res = AsmProcArgs::from_args(progname, &args);
+                if new_res.is_ok() {
+                    return new_res;
+                }
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+
+    base_res
+}
+
+fn parse_args_or_exit() -> ParsedArgs {
+    let argv: Vec<_> = std::env::args_os().collect();
+    let help_style = HelpStyle {
         short_usage: true,
         ..HelpStyle::default()
+    };
+    let progname = argv[0].to_string_lossy();
+
+    let args = from_args_allow_eq(&[&progname], &argv[1..]).unwrap_or_else(|early_exit| {
+        exit(match early_exit {
+            EarlyExit::Help(help) => {
+                println!(
+                    "{}",
+                    help.generate(&help_style).replace(
+                        "[rest...]",
+                        "<compiler...> -- <assembler...> -- <compiler flags...>"
+                    )
+                );
+                0
+            }
+            EarlyExit::Err(err) => {
+                eprintln!("{}\nRun {} --help for more information.", err, progname);
+                1
+            }
+        })
     });
+
     let Some((compiler, assembler, compile_args)) = parse_rest(&args.rest) else {
         eprintln!(
-            "Usage: asm-processor [options] <compiler...> -- <assembler...> -- <compiler flags...>"
+            "Usage: {} [options] <compiler...> -- <assembler...> -- <compiler flags...>",
+            progname
         );
-        eprintln!("Run asm-processor --help for more information.");
+        eprintln!("Run {} --help for more information.", progname);
         exit(1);
     };
 
@@ -314,6 +382,31 @@ fn main() -> Result<()> {
         eprintln!("Unsupported compiler flags: {}", err);
         exit(1);
     });
+
+    let compiler = compiler.into();
+    let assembler = assembler.into();
+
+    ParsedArgs {
+        args,
+        compiler,
+        assembler,
+        compile_args,
+        in_file,
+        out_file,
+        opts,
+    }
+}
+
+fn main() -> Result<()> {
+    let ParsedArgs {
+        args,
+        compiler,
+        assembler,
+        compile_args,
+        in_file,
+        out_file,
+        opts,
+    } = parse_args_or_exit();
 
     let assembler_sh = assembler
         .iter()
