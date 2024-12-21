@@ -11,7 +11,7 @@ CC="$MIPS_CC"  # ido 7.1 via recomp or qemu-irix
 AS="mips-linux-gnu-as"
 ASFLAGS="-march=vr4300 -mabi=32"
 OPTFLAGS=$(grep 'COMPILE-FLAGS: ' $INPUT | sed 's#^.*COMPILE-FLAGS: ##' | sed 's#}$##')
-ASMPFLAGS=$(grep 'ASMP-FLAGS: ' $INPUT | sed 's#^.*ASMP-FLAGS: ##' | sed 's#}$##')
+ASMPFLAGS=$(grep 'ASMP-FLAGS: ' $INPUT | sed 's#^.*ASMP-FLAGS: ##' | sed 's#}$##' | sed 's#$CWD#'"$WD/tests#g")
 ISET=$(grep 'COMPILE-ISET: ' $INPUT | sed 's#^.*COMPILE-ISET: ##' | sed 's#}$##')
 if [[ -z "$OPTFLAGS" ]]; then
     OPTFLAGS="-g"

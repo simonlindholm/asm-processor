@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
-import tempfile
-import struct
-import sys
-import re
-import os
 from collections import namedtuple
 from io import StringIO
+import os
+from pathlib import Path
+import re
+import struct
+import sys
+import tempfile
 
 MAX_FN_SIZE = 100
 SLOW_CHECKS = False
@@ -1463,11 +1464,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             pass
 
 def run_wrapped(argv, outfile, functions):
+    dir_path = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
-    parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
+    parser.add_argument('--asm-prelude', dest='asm_prelude', type=Path, default=dir_path / ".." / "prelude.inc", help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
     parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")

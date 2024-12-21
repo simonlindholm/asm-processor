@@ -11,9 +11,6 @@ import asm_processor
 # Preprocessed files are temporary, set to True to keep a copy
 keep_preprocessed_files = False
 
-dir_path = Path(__file__).resolve().parent
-asm_prelude_path = dir_path / ".." / "prelude.inc"
-
 progname = sys.argv[0]
 all_args = sys.argv[1:]
 
@@ -130,8 +127,6 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
             str(out_file),
             "--assembler",
             assembler_sh,
-            "--asm-prelude",
-            str(asm_prelude_path),
         ],
         functions=functions,
     )
