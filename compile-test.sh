@@ -3,6 +3,8 @@ set -o pipefail
 INPUT="$1"
 OUTPUT="${INPUT%.*}.o"
 
+WD=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
 rm -f "$OUTPUT"
 
 CC="$MIPS_CC"  # ido 7.1 via recomp or qemu-irix
@@ -25,11 +27,11 @@ fi
 set -e
 
 if [[ "$2" == "python" ]]; then
-    PROG="python3 ./python/build.py"
+    PROG="python3 $WD/python/build.py"
 elif [[ "$2" == "rust-release" ]]; then
-    PROG="./rust/target/release/asm-processor"
+    PROG="$WD/rust/target/release/asm-processor"
 elif [[ "$2" == "rust-debug" ]]; then
-    PROG="./rust/target/debug/asm-processor"
+    PROG="$WD/rust/target/debug/asm-processor"
 else
 	echo "Usage: $0 input.c (python|rust-release|rust-debug)"
 fi
