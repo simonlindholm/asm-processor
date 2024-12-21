@@ -7,9 +7,10 @@ import tempfile
 import uuid
 import asm_processor
 
-# Boolean for debugging purposes
-# Preprocessed files are temporary, set to True to keep a copy
-keep_preprocessed_files = False
+# Preprocessed files are temporary. For debugging purposes, you can set this
+# variable or pass --keep-preprocessed path/to/dir/ to keep a copy.
+keep_output_dir = None
+# keep_output_dir = Path("./asm_processor_preprocessed")
 
 progname = sys.argv[0]
 all_args = sys.argv[1:]
@@ -25,7 +26,7 @@ while i < len(all_args):
         break
     i += 1
     asmproc_flags.append(arg)
-    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics") and i < len(all_args):
+    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed") and i < len(all_args):
         asmproc_flags.append(all_args[i])
         i += 1
 
@@ -92,12 +93,12 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     preprocessed_path = tmpdir_path / preprocessed_filename
 
     with preprocessed_path.open("wb") as f:
-        functions, deps = asm_processor.run(asmproc_flags, outfile=f)
+        functions, deps, keep_output_dir2 = asm_processor.run(asmproc_flags, outfile=f)
 
-    if keep_preprocessed_files:
+    keep_output_dir = keep_output_dir or keep_output_dir2
+    if keep_output_dir:
         import shutil
 
-        keep_output_dir = Path("./asm_processor_preprocessed")
         keep_output_dir.mkdir(parents=True, exist_ok=True)
 
         shutil.copy(

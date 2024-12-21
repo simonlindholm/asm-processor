@@ -184,6 +184,10 @@ struct AsmProcArgs {
     #[argp(switch)]
     force: bool,
 
+    /// Emit temporary files to this directory
+    #[argp(option, arg_name = "DIR")]
+    keep_preprocessed: Option<PathBuf>,
+
     /// Replace floats with their encoded hexadecimal representation in CutsceneData data
     #[argp(switch)]
     encode_cutscene_data_floats: bool,
@@ -416,10 +420,6 @@ fn main() -> Result<()> {
 
     let in_dir = fs::canonicalize(in_file.parent().unwrap().join("."))?;
 
-    // Boolean for debugging purposes
-    // Preprocessed files are temporary, set to True to keep a copy
-    let keep_preprocessed_files = false;
-
     let temp_dir = TempDir::with_prefix("asm_processor")?;
     let preprocessed_filename = format!(
         "preprocessed_{}",
@@ -431,16 +431,11 @@ fn main() -> Result<()> {
     let res = parse_source(&in_file, &args, &opts, true)?;
     preprocessed_file.write_all(&res.output)?;
 
-    if keep_preprocessed_files {
-        let kept_files_path = Path::new("asm_processor_preprocessed");
-        fs::create_dir_all(kept_files_path)?;
+    if let Some(keep_output_dir) = &args.keep_preprocessed {
+        fs::create_dir_all(keep_output_dir)?;
         fs::copy(
             &preprocessed_path,
-            Path::new("asm_processor_preprocessed").join(format!(
-                "{}_{}",
-                in_file.file_stem().unwrap().to_str().unwrap(),
-                &preprocessed_filename
-            )),
+            keep_output_dir.join(&preprocessed_filename),
         )?;
     }
 

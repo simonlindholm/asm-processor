@@ -1475,6 +1475,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
     parser.add_argument('--convert-statics', dest='convert_statics', choices=["no", "local", "global", "global-with-filename"], default="local", help="change static symbol visibility (default: %(default)s)")
     parser.add_argument('--force', dest='force', action='store_true', help="force processing of files without GLOBAL_ASM blocks")
+    parser.add_argument('--keep-preprocessed', dest='keep_output_dir', type=Path, help="emit temporary files to this directory (build.py only)")
     parser.add_argument('--encode-cutscene-data-floats', dest='encode_cutscene_data_floats', action='store_true', default=False, help="Replace floats with their encoded hexadecimal representation in CutsceneData data")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
@@ -1502,7 +1503,7 @@ def run_wrapped(argv, outfile, functions):
         with open(args.filename, encoding=args.input_enc) as f:
             deps = []
             functions = parse_source(f, opts, out_dependencies=deps, print_source=outfile)
-            return functions, deps
+            return functions, deps, args.keep_output_dir
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
