@@ -92,8 +92,8 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     preprocessed_filename = "preprocessed_" + uuid.uuid4().hex + in_file.suffix
     preprocessed_path = tmpdir_path / preprocessed_filename
 
-    with preprocessed_path.open("wb") as f:
-        functions, deps, keep_output_dir2 = asm_processor.run(asmproc_flags, outfile=f)
+    with preprocessed_path.open("wb") as outfile:
+        functions, deps, keep_output_dir2 = asm_processor.run(asmproc_flags, outfile=outfile)
 
     keep_output_dir = keep_output_dir or keep_output_dir2
     if keep_output_dir:
