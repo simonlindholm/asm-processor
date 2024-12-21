@@ -29,7 +29,7 @@ fi
 set -e
 
 if [[ "$2" == "python" ]]; then
-    PROG="python3 ./python/build.py"
+    PROG="python3 ./build.py"
 elif [[ "$2" == "rust-release" ]]; then
     PROG="./rust/target/release/asm-processor"
 elif [[ "$2" == "rust-debug" ]]; then
