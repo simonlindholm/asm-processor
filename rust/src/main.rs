@@ -449,22 +449,15 @@ fn main() -> Result<()> {
         .arg(&out_file)
         .arg(&preprocessed_path);
 
-    let status = compile_command.status().unwrap_or_else(|_| {
-        panic!(
-            "Failed to compile file {}. Command line: {} {:?}",
-            in_file.display(),
-            compiler[0].clone(),
-            compile_command
-        )
-    });
-
-    if !status.success() {
-        return Err(anyhow::anyhow!(
-            "Failed to compile file {}. Command line: {} {:?}",
-            in_file.display(),
-            compiler[0].clone(),
-            compile_command
-        ));
+    match compile_command.status() {
+        Ok(status) if status.success() => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Failed to compile file {}. Command line:\n\n{:?}\n",
+                in_file.display(),
+                compile_command
+            ));
+        }
     }
 
     if !res.functions.is_empty() || args.force {
