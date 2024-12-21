@@ -14,26 +14,61 @@ keep_preprocessed_files = False
 dir_path = Path(__file__).resolve().parent
 asm_prelude_path = dir_path / ".." / "prelude.inc"
 
+progname = sys.argv[0]
 all_args = sys.argv[1:]
-sep0 = next(index for index, arg in enumerate(all_args) if not arg.startswith("-"))
-sep1 = all_args.index("--")
-sep2 = all_args.index("--", sep1 + 1)
 
-asmproc_flags = all_args[:sep0]
+i = 0
+asmproc_flags = []
+while i < len(all_args):
+    arg = all_args[i]
+    if arg == "--":
+        i += 1
+        break
+    if not arg.startswith("-"):
+        break
+    i += 1
+    asmproc_flags.append(arg)
+    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics") and i < len(all_args):
+        asmproc_flags.append(all_args[i])
+        i += 1
+
+sep0 = i
+try:
+    sep1 = all_args.index("--", sep0)
+    sep2 = all_args.index("--", sep1 + 1)
+except ValueError:
+    print(f"Usage: {progname} [options] <compiler...> -- <assembler...> -- <compiler flags...>")
+    sys.exit(1)
+
 compiler = all_args[sep0:sep1]
-
 assembler_args = all_args[sep1 + 1 : sep2]
+compile_args = all_args[sep2 + 1 :]
+
 assembler_sh = " ".join(shlex.quote(x) for x in assembler_args)
 
 
-compile_args = all_args[sep2 + 1 :]
+def fail_parse(msg):
+    print(f"Failed to parse compiler flags: {msg}")
+    sys.exit(1)
 
-out_ind = compile_args.index("-o")
-out_file = Path(compile_args[out_ind + 1])
+try:
+    out_ind = compile_args.index("-o")
+except ValueError:
+    fail_parse("missing -o argument")
+
+try:
+    out_file = Path(compile_args[out_ind + 1])
+except IndexError:
+    fail_parse("missing argument after -o")
+
 del compile_args[out_ind + 1]
 del compile_args[out_ind]
 
-in_file = Path(compile_args[-1])
+try:
+    in_file = Path(compile_args[-1])
+except IndexError:
+    fail_parse("missing input file argument")
+
 del compile_args[-1]
 
 
