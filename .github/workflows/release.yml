@@ -26,6 +26,7 @@ jobs:
       - name: Compile
         id: compile
         run: |
+          cd rust
           cargo build --release --target ${{ matrix.target }}
           echo "::set-output name=BUILT_ARCHIVE::target/${{ matrix.target }}/release/asm-processor"
           echo "::set-output name=BUILT_CHECKSUM::target/${{ matrix.target }}/release/asm-processor.sha256sum"
