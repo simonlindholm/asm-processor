@@ -1,4 +1,4 @@
-name: Rust crate and cli release
+name: Rust Release
 
 on:
   push:
@@ -21,38 +21,22 @@ jobs:
             archive: tar.gz
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile
+        id: compile
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          echo "::set-output name=BUILT_ARCHIVE::target/${{ matrix.target }}/release/asm-processor"
+          echo "::set-output name=BUILT_CHECKSUM::target/${{ matrix.target }}/release/asm-processor.sha256sum"
 
-      - name: Compile cli for artifact
-        id: compile_cli
-        uses: rust-build/rust-build.action@v1.4.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          RUSTTARGET: ${{ matrix.target }}
-          ARCHIVE_TYPES: ${{ matrix.archive }}
-          SRC_DIR: rust/
-          UPLOAD_MODE: none
-
-      - name: Upload cli artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: crunch64-cli-${{ matrix.target }}
+          name: asm-processor-${{ matrix.target }}
           path: |
-            ${{ steps.compile_cli.outputs.BUILT_ARCHIVE }}
-            ${{ steps.compile_cli.outputs.BUILT_CHECKSUM }}
-
-      - name: Compile and release cli
-        uses: rust-build/rust-build.action@v1.4.5
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          RUSTTARGET: ${{ matrix.target }}
-          ARCHIVE_TYPES: ${{ matrix.archive }}
-          SRC_DIR: rust/
-          UPLOAD_MODE: release
+            ${{ steps.compile.outputs.BUILT_ARCHIVE }}
+            ${{ steps.compile.outputs.BUILT_CHECKSUM }}
   publish:
     runs-on: ubuntu-latest
     steps:
@@ -60,14 +44,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Publish crate
         uses: katyo/publish-crates@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          path: "lib/"
+          path: "rust/"
           registry-token: ${{ secrets.CRATE_AUTH_TOKEN }}
