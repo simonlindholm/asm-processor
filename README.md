@@ -112,3 +112,13 @@ MIPS_CC='./qemu-irix -silent -L ../ido-static-recomp/ido/7.1/ ../ido-static-reco
 ```
 
 To skip running Pascal tests, remove the `tests/*.p` glob from `run-tests.sh`.
+
+## Rust implementation
+
+asm-processor now has a 1:1 Rust implementation that avoids Python startup latency and generally is much more performant.
+It is designed to be a drop-in replacement with the existing Python verson. Rather than running `./build.py`, you simply run `asm-processor` instead.
+
+### Installation
+The simplest way to install the Rust implementation of asm-processor is to simply run `cargo install asm-processor`. The binary for the current architecture will be built and installed locally. Projects can then just invoke `asm-processor` from any location, as long as the installation directory is in the system path.
+
+If you prefer to manage the dependency itself in your project, we also provide release binaries that can be downloaded either at build time or as static project dependencies.
