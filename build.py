@@ -26,8 +26,8 @@ while i < len(all_args):
         break
     i += 1
     asmproc_flags.append(arg)
-    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed") and i < len(all_args):
-        asmproc_flags.append(all_args[i])
+    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed", "--no-dep-file") and i < len(all_args):
+        asmproc_flags.append(arg)
         i += 1
 
 sep0 = i
@@ -133,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     )
 
     deps_file = out_file.with_suffix(".asmproc.d")
-    if deps:
+    if deps and "--no-dep-file" not in asmproc_flags:
         with deps_file.open("w") as f:
             f.write(str(out_file) + ": " + " \\\n    ".join(deps) + "\n")
             for dep in deps:

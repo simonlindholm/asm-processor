@@ -2,6 +2,13 @@
 
 Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IDO-compiled C.
 
+## Installation
+The simplest way to install asm-processor is via [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html): from anywhere, run `cargo install asm-processor`. The binary for the current architecture will be built and installed locally on the system. Projects can then just invoke `asm-processor` from any location, as long as the installation directory is in the system path. Alternatively, the binary can be built from source (`cargo build --release`) if the asm-processor repository is cloned.
+
+If you prefer to manage the dependency itself in your project, we also provide release binaries that can either be downloaded at build time or included directly in your project.
+
+To invoke the python implementation of asm-processor, simply run `./build.py` and the remaining flags as seen in the usage section below. For the Rust implementation, simply replace `build.py` with the `asm-processor` binary.
+
 ## Usage
 
 Let's say you have a file compiled with `-g` on the IDO compiler, that looks like this:
@@ -35,10 +42,10 @@ nop
 )
 ```
 
-To compile the file, run `asm-processor $CC -- $AS $ASFLAGS -- $CFLAGS -o out.o in.c`, where $CC points to an IDO binary (5.3/7.1 and recomp/qemu all supported), $AS is e.g. `mips-linux-gnu-as`, $ASFLAGS e.g. `-march=vr4300 -mabi=32` and $CFLAGS e.g. `-Wab,-r4300_mul -non_shared -G 0 -Xcpluscomm -g`.
+To compile the file, run `build.py $CC -- $AS $ASFLAGS -- $CFLAGS -o out.o in.c`, where $CC points to an IDO binary (5.3/7.1 and recomp/qemu all supported), $AS is e.g. `mips-linux-gnu-as`, $ASFLAGS e.g. `-march=vr4300 -mabi=32` and $CFLAGS e.g. `-Wab,-r4300_mul -non_shared -G 0 -Xcpluscomm -g`.
 
 In addition to an .o file, asm-processor also generates a .d file with Makefile dependencies for .s files referenced by the input .c file.
-This functionality may be removed if not needed.
+This functionality may be removed from the Python implementation if not needed.
 
 Reading assembly from file is also supported, by either `GLOBAL_ASM("file.s")` or `#pragma GLOBAL_ASM("file.s")`.
 
@@ -112,13 +119,3 @@ MIPS_CC='./qemu-irix -silent -L ../ido-static-recomp/ido/7.1/ ../ido-static-reco
 ```
 
 To skip running Pascal tests, remove the `tests/*.p` glob from `run-tests.sh`.
-
-## Rust implementation
-
-asm-processor now has a 1:1 Rust implementation that avoids Python startup latency and generally is much more performant.
-It is designed to be a drop-in replacement with the existing Python verson. Rather than running `./build.py`, you simply run `asm-processor` instead.
-
-### Installation
-The simplest way to install the Rust implementation of asm-processor is to simply run `cargo install asm-processor`. The binary for the current architecture will be built and installed locally. Projects can then just invoke `asm-processor` from any location, as long as the installation directory is in the system path.
-
-If you prefer to manage the dependency itself in your project, we also provide release binaries that can be downloaded either at build time or as static project dependencies.

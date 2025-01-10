@@ -192,6 +192,10 @@ struct AsmProcArgs {
     #[argp(switch)]
     encode_cutscene_data_floats: bool,
 
+    /// Don't generate a dependency file
+    #[argp(switch)]
+    no_dep_file: bool,
+
     #[argp(positional, greedy)]
     rest: Vec<String>,
 }
@@ -485,7 +489,7 @@ fn main() -> Result<()> {
         )?;
     }
 
-    if !res.deps.is_empty() {
+    if !res.deps.is_empty() && !args.no_dep_file {
         let deps_file = out_file.with_extension("asmproc.d");
         let mut deps_file = File::create(&deps_file)?;
 
