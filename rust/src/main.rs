@@ -192,7 +192,7 @@ struct AsmProcArgs {
     #[argp(switch)]
     encode_cutscene_data_floats: bool,
 
-    /// Don't generate a dependency file
+    /// Don't generate a .d make dependency file
     #[argp(switch)]
     no_dep_file: bool,
 
