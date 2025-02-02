@@ -14,6 +14,7 @@ use std::{
 
 use anyhow::Result;
 use argp::{EarlyExit, FromArgs, HelpStyle};
+use encoding_rs::UTF_8;
 use enum_map::{Enum, EnumMap};
 use temp_dir::TempDir;
 
@@ -84,9 +85,22 @@ impl Encoding {
         match self {
             Encoding::Latin1 => Ok(encoding_rs::mem::decode_latin1(bytes)),
             Encoding::Custom(enc) => {
-                let (ret, _, failed) = enc.decode(bytes);
+                let mut bytes: Vec<u8> = bytes.iter().copied().collect::<Vec<u8>>().into();
+
+                if *enc == UTF_8 {
+                    // replace 〜 with ～
+                    for i in 0..bytes.len() - 1 {
+                        if bytes[i] == 0xE3 && bytes[i + 1] == 0x80 && bytes[i + 2] == 0x9C {
+                            bytes[i] = 0xEF;
+                            bytes[i + 1] = 0xBD;
+                            bytes[i + 2] = 0x9E;
+                        }
+                    }
+                }
+
+                let (ret, _, failed) = enc.decode(&bytes);
                 if !failed {
-                    Ok(ret)
+                    Ok(std::borrow::Cow::Owned(ret.into_owned()))
                 } else {
                     Err(anyhow::anyhow!("Failed to decode string: {}", ret))
                 }
