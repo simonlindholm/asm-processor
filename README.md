@@ -5,7 +5,7 @@ Pre-process .c files and post-process .o files to enable embedding MIPS assembly
 This repository contains both the original Python implementation and rewrite in Rust that is designed to be 1:1 behavorially equivalent with the existing Python version.
 
 ## Installation
-The simplest way to install asm-processor is via [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html): from anywhere, run `cargo install asm-processor`. The binary for the current architecture will be built and installed locally on the system. Projects can then just invoke `asm-processor` from any location, as long as the installation directory is in the system path. Alternatively, the binary can be built from source (`cargo build --release`) if the asm-processor repository is cloned.
+The simplest way to install asm-processor is via [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html): from anywhere, run `cargo install --locked asm-processor`. The binary for the current architecture will be built and installed locally on the system. Projects can then just invoke `asm-processor` from any location, as long as the installation directory is in the system path. Alternatively, the binary can be built from source (`cargo build --release`) if the asm-processor repository is cloned.
 
 If you prefer to manage the dependency itself in your project, we also provide release binaries that can either be downloaded at build time or included directly in your project.
 
