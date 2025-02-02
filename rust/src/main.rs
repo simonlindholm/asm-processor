@@ -85,7 +85,7 @@ impl Encoding {
         match self {
             Encoding::Latin1 => Ok(encoding_rs::mem::decode_latin1(bytes)),
             Encoding::Custom(enc) => {
-                let mut bytes: Vec<u8> = bytes.iter().copied().collect::<Vec<u8>>().into();
+                let mut bytes: Vec<u8> = bytes.to_vec();
 
                 if *enc == UTF_8 {
                     // replace 〜 with ～
