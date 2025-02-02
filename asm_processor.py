@@ -1481,6 +1481,7 @@ def run_wrapped(argv, outfile, functions):
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
     parser.add_argument('-KPIC', dest='kpic', action='store_true')
+    parser.add_argument('--no-dep-file', action='store_true', help="don't generate a dependency file")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-O0', dest='opt', action='store_const', const='O0')
     group.add_argument('-O1', dest='opt', action='store_const', const='O1')
