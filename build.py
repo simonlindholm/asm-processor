@@ -27,7 +27,7 @@ while i < len(all_args):
     i += 1
     asmproc_flags.append(arg)
     if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed", "--no-dep-file") and i < len(all_args):
-        asmproc_flags.append(arg)
+        asmproc_flags.append(all_args[i])
         i += 1
 
 sep0 = i
