@@ -79,7 +79,7 @@ impl Encoding {
                         return Ok(Cow::Owned(ret.into_owned()));
                     }
                 } else {
-                    let (ret, _, failed) = enc.encode(&s);
+                    let (ret, _, failed) = enc.encode(s);
                     if !failed {
                         return Ok(ret);
                     }
