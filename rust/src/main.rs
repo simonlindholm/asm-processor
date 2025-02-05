@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::Result;
 use argp::{EarlyExit, FromArgs, HelpStyle};
-use encoding_rs::UTF_8;
+use encoding_rs::EUC_JP;
 use enum_map::{Enum, EnumMap};
 use temp_dir::TempDir;
 
@@ -72,9 +72,22 @@ impl Encoding {
                 }
             }
             Encoding::Custom(enc) => {
-                let (ret, _, failed) = enc.encode(s);
+                let mut s = s.to_string();
+
+                if *enc == EUC_JP {
+                    // replace 〜 with ～
+                    s = s
+                        .chars()
+                        .map(|c| match c {
+                            '〜' => '～',
+                            _ => c,
+                        })
+                        .collect::<String>();
+                }
+
+                let (ret, _, failed) = enc.encode(&s);
                 if !failed {
-                    return Ok(ret);
+                    return Ok(Cow::Owned(ret.into_owned()));
                 }
             }
         }
@@ -85,22 +98,9 @@ impl Encoding {
         match self {
             Encoding::Latin1 => Ok(encoding_rs::mem::decode_latin1(bytes)),
             Encoding::Custom(enc) => {
-                let mut bytes: Vec<u8> = bytes.to_vec();
-
-                if *enc == UTF_8 {
-                    // replace 〜 with ～
-                    for i in 0..bytes.len() - 1 {
-                        if bytes[i] == 0xE3 && bytes[i + 1] == 0x80 && bytes[i + 2] == 0x9C {
-                            bytes[i] = 0xEF;
-                            bytes[i + 1] = 0xBD;
-                            bytes[i + 2] = 0x9E;
-                        }
-                    }
-                }
-
-                let (ret, _, failed) = enc.decode(&bytes);
+                let (ret, _, failed) = enc.decode(bytes);
                 if !failed {
-                    Ok(std::borrow::Cow::Owned(ret.into_owned()))
+                    Ok(ret)
                 } else {
                     Err(anyhow::anyhow!("Failed to decode string: {}", ret))
                 }
