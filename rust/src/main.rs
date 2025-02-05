@@ -75,14 +75,7 @@ impl Encoding {
                 let mut s = s.to_string();
 
                 if *enc == EUC_JP {
-                    // replace 〜 with ～
-                    s = s
-                        .chars()
-                        .map(|c| match c {
-                            '〜' => '～',
-                            _ => c,
-                        })
-                        .collect::<String>();
+                    s = s.replace("〜", "～");
                 }
 
                 let (ret, _, failed) = enc.encode(&s);
