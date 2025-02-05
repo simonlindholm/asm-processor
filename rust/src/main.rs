@@ -72,15 +72,17 @@ impl Encoding {
                 }
             }
             Encoding::Custom(enc) => {
-                let mut s = s.to_string();
-
                 if *enc == EUC_JP {
-                    s = s.replace("〜", "～");
-                }
-
-                let (ret, _, failed) = enc.encode(&s);
-                if !failed {
-                    return Ok(Cow::Owned(ret.into_owned()));
+                    let s = s.replace("〜", "～");
+                    let (ret, _, failed) = enc.encode(&s);
+                    if !failed {
+                        return Ok(Cow::Owned(ret.into_owned()));
+                    }
+                } else {
+                    let (ret, _, failed) = enc.encode(&s);
+                    if !failed {
+                        return Ok(ret);
+                    }
                 }
             }
         }
