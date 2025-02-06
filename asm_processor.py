@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
-import tempfile
-import struct
-import sys
-import re
-import os
 from collections import namedtuple
 from io import StringIO
+import os
+from pathlib import Path
+import re
+import struct
+import sys
+import tempfile
 
 MAX_FN_SIZE = 100
 SLOW_CHECKS = False
@@ -157,10 +158,10 @@ class Symbol:
         self.fmt = fmt
         self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx = fmt.unpack('IIIBBH', data)
         assert self.st_shndx != SHN_XINDEX, "too many sections (SHN_XINDEX not supported)"
-        self.bind = st_info >> 4
-        self.type = st_info & 15
+        self.st_bind = st_info >> 4
+        self.st_type = st_info & 0xf
         self.name = name if name is not None else strtab.lookup_str(self.st_name)
-        self.visibility = self.st_other & 3
+        self.st_visibility = self.st_other & 3
 
     @staticmethod
     def from_parts(fmt, st_name, st_value, st_size, st_info, st_other, st_shndx, strtab, name):
@@ -168,7 +169,7 @@ class Symbol:
         return Symbol(fmt, header, strtab, name)
 
     def to_bin(self):
-        st_info = (self.bind << 4) | self.type
+        st_info = (self.st_bind << 4) | self.st_type
         return self.fmt.pack('IIIBBH', self.st_name, self.st_value, self.st_size, st_info, self.st_other, self.st_shndx)
 
 
@@ -245,50 +246,12 @@ class Section:
             self.sh_size = len(self.data)
         return self.fmt.pack('IIIIIIIIII', self.sh_name, self.sh_type, self.sh_flags, self.sh_addr, self.sh_offset, self.sh_size, self.sh_link, self.sh_info, self.sh_addralign, self.sh_entsize)
 
-    def late_init(self, sections):
-        if self.sh_type == SHT_SYMTAB:
-            self.init_symbols(sections)
-        elif self.is_rel():
-            self.rel_target = sections[self.sh_info]
-            self.rel_target.relocated_by.append(self)
-            self.init_relocs()
-
-    def find_symbol(self, name):
-        assert self.sh_type == SHT_SYMTAB
-        for s in self.symbol_entries:
-            if s.name == name:
-                return (s.st_shndx, s.st_value)
-        return None
-
-    def find_symbol_in_section(self, name, section):
-        pos = self.find_symbol(name)
-        assert pos is not None
-        assert pos[0] == section.index
-        return pos[1]
-
-    def init_symbols(self, sections):
-        assert self.sh_type == SHT_SYMTAB
-        assert self.sh_entsize == 16
-        self.strtab = sections[self.sh_link]
-        entries = []
-        for i in range(0, self.sh_size, self.sh_entsize):
-            entries.append(Symbol(self.fmt, self.data[i:i+self.sh_entsize], self.strtab))
-        self.symbol_entries = entries
-
     def init_relocs(self):
         assert self.is_rel()
         entries = []
         for i in range(0, self.sh_size, self.sh_entsize):
             entries.append(Relocation(self.fmt, self.data[i:i+self.sh_entsize], self.sh_type))
         self.relocations = entries
-
-    def local_symbols(self):
-        assert self.sh_type == SHT_SYMTAB
-        return self.symbol_entries[:self.sh_info]
-
-    def global_symbols(self):
-        assert self.sh_type == SHT_SYMTAB
-        return self.symbol_entries[self.sh_info:]
 
     def relocate_mdebug(self, original_offset):
         assert self.sh_type == SHT_MIPS_DEBUG
@@ -352,11 +315,36 @@ class ElfFile:
                 symtab = s
         assert symtab is not None
         self.symtab = symtab
+        self.sym_strtab = self.sections[symtab.sh_link]
+        self.symbol_entries = ElfFile.init_symbols(symtab, self.sym_strtab)
 
         shstr = self.sections[self.elf_header.e_shstrndx]
         for s in self.sections:
             s.name = shstr.lookup_str(s.sh_name)
-            s.late_init(self.sections)
+            if s.is_rel():
+                self.sections[s.sh_info].relocated_by.append(s)
+                s.init_relocs()
+
+    @staticmethod
+    def init_symbols(symtab, strtab):
+        assert symtab.sh_type == SHT_SYMTAB
+        assert symtab.sh_entsize == 16
+        syms = []
+        for i in range(0, symtab.sh_size, symtab.sh_entsize):
+            syms.append(Symbol(symtab.fmt, symtab.data[i:i+symtab.sh_entsize], strtab))
+        return syms
+
+    def find_symbol(self, name):
+        for s in self.symbol_entries:
+            if s.name == name:
+                return (s.st_shndx, s.st_value)
+        return None
+
+    def find_symbol_in_section(self, name, section):
+        pos = self.find_symbol(name)
+        assert pos is not None
+        assert pos[0] == section.index
+        return pos[1]
 
     def find_section(self, name):
         for s in self.sections:
@@ -373,7 +361,6 @@ class ElfFile:
                 index=len(self.sections))
         self.sections.append(s)
         s.name = name
-        s.late_init(self.sections)
         return s
 
     def drop_mdebug_gptab(self):
@@ -883,7 +870,7 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc', 'enable_cutscene_data_float_encoding'])
+Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc', 'encode_cutscene_data_floats'])
 
 def parse_source(f, opts, out_dependencies, print_source=None):
     if opts.opt in ['O1', 'O2']:
@@ -1034,7 +1021,7 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             output_lines[-1] = include_src.getvalue()
             include_src.close()
         else:
-            if opts.enable_cutscene_data_float_encoding:
+            if opts.encode_cutscene_data_floats:
                 # This is a hack to replace all floating-point numbers in an array of a particular type
                 # (in this case CutsceneData) with their corresponding IEEE-754 hexadecimal representation
                 if cutscene_data_regexpr.search(line) is not None:
@@ -1102,7 +1089,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             if temp_name is None:
                 continue
             assert size > 0
-            loc = objfile.symtab.find_symbol(temp_name)
+            loc = objfile.find_symbol(temp_name)
             if loc is None:
                 ifdefed = True
                 break
@@ -1196,8 +1183,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             source = asm_objfile.find_section(sectype)
             assert source is not None, "didn't find source section: " + sectype
             for (pos, count, temp_name, fn_desc) in to_copy[sectype]:
-                loc1 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_start', source)
-                loc2 = asm_objfile.symtab.find_symbol_in_section(temp_name + '_asm_end', source)
+                loc1 = asm_objfile.find_symbol_in_section(temp_name + '_asm_start', source)
+                loc2 = asm_objfile.find_symbol_in_section(temp_name + '_asm_end', source)
                 assert loc1 == pos, "assembly and C files don't line up for section " + sectype + ", " + fn_desc
                 if loc2 - loc1 != count:
                     raise Failure("incorrectly computed size for section " + sectype + ", " + fn_desc + ". If using .double, make sure to provide explicit alignment padding.")
@@ -1223,8 +1210,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         if any(all_late_rodata_dummy_bytes) or any(all_jtbl_rodata_size):
             source = asm_objfile.find_section('.late_rodata')
             target = objfile.find_section('.rodata')
-            source_pos = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_start, source)
-            source_end = asm_objfile.symtab.find_symbol_in_section(late_rodata_source_name_end, source)
+            source_pos = asm_objfile.find_symbol_in_section(late_rodata_source_name_start, source)
+            source_end = asm_objfile.find_symbol_in_section(late_rodata_source_name_end, source)
             if source_end - source_pos != sum(map(len, all_late_rodata_dummy_bytes)) * 4 + sum(all_jtbl_rodata_size):
                 raise Failure("computed wrong size of .late_rodata")
             new_data = list(target.data)
@@ -1262,8 +1249,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             target.data = bytes(new_data)
 
         # Merge strtab data.
-        strtab_adj = len(objfile.symtab.strtab.data)
-        objfile.symtab.strtab.data += asm_objfile.symtab.strtab.data
+        strtab_adj = len(objfile.sym_strtab.data)
+        objfile.sym_strtab.data += asm_objfile.sym_strtab.data
 
         # Find relocated symbols
         relocated_symbols = set()
@@ -1273,15 +1260,15 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 continue
             for reltab in sec.relocated_by:
                 for rel in reltab.relocations:
-                    relocated_symbols.add(asm_objfile.symtab.symbol_entries[rel.sym_index])
+                    relocated_symbols.add(asm_objfile.symbol_entries[rel.sym_index])
 
         # Move over symbols, deleting the temporary function labels.
         # Skip over new local symbols that aren't relocated against, to
         # avoid conflicts.
-        empty_symbol = objfile.symtab.symbol_entries[0]
-        new_syms = [s for s in objfile.symtab.symbol_entries[1:] if not is_temp_name(s.name)]
+        empty_symbol = objfile.symbol_entries[0]
+        new_syms = [s for s in objfile.symbol_entries[1:] if not is_temp_name(s.name)]
 
-        for i, s in enumerate(asm_objfile.symtab.symbol_entries):
+        for i, s in enumerate(asm_objfile.symbol_entries):
             is_local = (i < asm_objfile.symtab.sh_info)
             if is_local and s not in relocated_symbols:
                 continue
@@ -1301,7 +1288,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                 s.st_shndx = objfile_section.index
                 # glabel's aren't marked as functions, making objdump output confusing. Fix that.
                 if s.name in all_text_glabels:
-                    s.type = STT_FUNC
+                    s.st_type = STT_FUNC
                     if s.name in func_sizes:
                         s.st_size = func_sizes[s.name]
                 if section_name == '.late_rodata':
@@ -1320,7 +1307,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
         if mdebug_section and convert_statics != "no":
             static_name_count = {}
-            strtab_index = len(objfile.symtab.strtab.data)
+            strtab_index = len(objfile.sym_strtab.data)
             new_strtab_data = []
             ifd_max, cb_fd_offset = fmt.unpack('II', mdebug_section.data[18*4 : 20*4])
             cb_sym_offset, = fmt.unpack('I', mdebug_section.data[9*4 : 10*4])
@@ -1363,7 +1350,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             st_info=(binding << 4 | symtype),
                             st_other=STV_DEFAULT,
                             st_shndx=section.index,
-                            strtab=objfile.symtab.strtab,
+                            strtab=objfile.sym_strtab,
                             name=symbol_name.decode('latin1'))
                         strtab_index += len(emitted_symbol_name) + 1
                         new_strtab_data.append(emitted_symbol_name + b'\0')
@@ -1381,7 +1368,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                     if st == MIPS_DEBUG_ST_END:
                         scope_level -= 1
                 assert scope_level == 0
-            objfile.symtab.strtab.data += b''.join(new_strtab_data)
+            objfile.sym_strtab.data += b''.join(new_strtab_data)
 
         # Get rid of duplicate symbols, favoring ones that are not UNDEF.
         # Skip this for unnamed local symbols though.
@@ -1391,11 +1378,11 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         name_to_sym = {}
         for s in new_syms:
             if s.name == "_gp_disp":
-                s.type = STT_OBJECT
-            if s.bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
+                s.st_type = STT_OBJECT
+            if s.st_bind == STB_LOCAL and s.st_shndx == SHN_UNDEF:
                 raise Failure("local symbol \"" + s.name + "\" is undefined")
             if not s.name:
-                if s.bind != STB_LOCAL:
+                if s.st_bind != STB_LOCAL:
                     raise Failure("global symbol with no name")
                 newer_syms.append(s)
             else:
@@ -1415,8 +1402,8 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
         # Put local symbols in front, with the initial dummy entry first, and
         # _gp_disp at the end if it exists.
         new_syms.insert(0, empty_symbol)
-        new_syms.sort(key=lambda s: (s.bind != STB_LOCAL, s.name == "_gp_disp"))
-        num_local_syms = sum(1 for s in new_syms if s.bind == STB_LOCAL)
+        new_syms.sort(key=lambda s: (s.st_bind != STB_LOCAL, s.name == "_gp_disp"))
+        num_local_syms = sum(1 for s in new_syms if s.st_bind == STB_LOCAL)
 
         for i, s in enumerate(new_syms):
             s.new_index = i
@@ -1438,7 +1425,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                             sectype == '.rodata' and rel.r_offset in jtbl_rodata_positions):
                             # don't include relocations for late_rodata dummy code
                             continue
-                        rel.sym_index = objfile.symtab.symbol_entries[rel.sym_index].new_index
+                        rel.sym_index = objfile.symbol_entries[rel.sym_index].new_index
                         nrels.append(rel)
                     reltab.relocations = nrels
                     reltab.data = b''.join(rel.to_bin() for rel in nrels)
@@ -1452,28 +1439,20 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             target_sectype = '.rodata' if sectype == '.late_rodata' else sectype
             target = objfile.find_section(target_sectype)
             assert target is not None, target_sectype
-            target_reltab = objfile.find_section('.rel' + target_sectype)
-            target_reltaba = objfile.find_section('.rela' + target_sectype)
             for reltab in source.relocated_by:
                 for rel in reltab.relocations:
-                    rel.sym_index = asm_objfile.symtab.symbol_entries[rel.sym_index].new_index
+                    rel.sym_index = asm_objfile.symbol_entries[rel.sym_index].new_index
                     if sectype == '.late_rodata':
                         rel.r_offset = moved_late_rodata[rel.r_offset]
                 new_data = b''.join(rel.to_bin() for rel in reltab.relocations)
-                if reltab.sh_type == SHT_REL:
-                    if not target_reltab:
-                        target_reltab = objfile.add_section('.rel' + target_sectype,
-                                sh_type=SHT_REL, sh_flags=0,
-                                sh_link=objfile.symtab.index, sh_info=target.index,
-                                sh_addralign=4, sh_entsize=8, data=b'')
-                    target_reltab.data += new_data
-                else:
-                    if not target_reltaba:
-                        target_reltaba = objfile.add_section('.rela' + target_sectype,
-                                sh_type=SHT_RELA, sh_flags=0,
-                                sh_link=objfile.symtab.index, sh_info=target.index,
-                                sh_addralign=4, sh_entsize=12, data=b'')
-                    target_reltaba.data += new_data
+                prefix, sh_entsize = ('.rel', 8) if reltab.sh_type == SHT_REL else ('.rela', 12)
+                target_reltab = objfile.find_section(prefix + target_sectype)
+                if not target_reltab:
+                    target_reltab = objfile.add_section(prefix + target_sectype,
+                            sh_type=reltab.sh_type, sh_flags=0,
+                            sh_link=objfile.symtab.index, sh_info=target.index,
+                            sh_addralign=4, sh_entsize=sh_entsize, data=b'')
+                target_reltab.data += new_data
 
         objfile.write(objfile_name)
     finally:
@@ -1485,17 +1464,20 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
             pass
 
 def run_wrapped(argv, outfile, functions):
+    dir_path = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
-    parser.add_argument('--asm-prelude', dest='asm_prelude', help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
+    parser.add_argument('--asm-prelude', dest='asm_prelude', type=Path, default=dir_path / "prelude.inc", help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
     parser.add_argument('--input-enc', default='latin1', help="input encoding (default: %(default)s)")
     parser.add_argument('--output-enc', default='latin1', help="output encoding (default: %(default)s)")
     parser.add_argument('--drop-mdebug-gptab', dest='drop_mdebug_gptab', action='store_true', help="drop mdebug and gptab sections")
     parser.add_argument('--convert-statics', dest='convert_statics', choices=["no", "local", "global", "global-with-filename"], default="local", help="change static symbol visibility (default: %(default)s)")
     parser.add_argument('--force', dest='force', action='store_true', help="force processing of files without GLOBAL_ASM blocks")
-    parser.add_argument('--encode-cutscene-data-floats', dest='enable_cutscene_data_float_encoding', action='store_true', default=False, help="Replace floats with their encoded hexadecimal representation in CutsceneData data")
+    parser.add_argument('--keep-preprocessed', dest='keep_output_dir', type=Path, help="emit temporary files to this directory (build.py only)")
+    parser.add_argument('--no-dep-file', action='store_true', help="don't generate a .d make dependency file (build.py only)")
+    parser.add_argument('--encode-cutscene-data-floats', dest='encode_cutscene_data_floats', action='store_true', default=False, help="Replace floats with their encoded hexadecimal representation in CutsceneData data")
     parser.add_argument('-framepointer', dest='framepointer', action='store_true')
     parser.add_argument('-mips1', dest='mips1', action='store_true')
     parser.add_argument('-g3', dest='g3', action='store_true')
@@ -1516,13 +1498,13 @@ def run_wrapped(argv, outfile, functions):
         raise Failure("-mips1 is only supported together with -O1 or -O2")
     if pascal and opt not in ('O1', 'O2', 'g3'):
         raise Failure("Pascal is only supported together with -O1, -O2 or -O2 -g3")
-    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, args.output_enc, args.enable_cutscene_data_float_encoding)
+    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, args.output_enc, args.encode_cutscene_data_floats)
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
             deps = []
             functions = parse_source(f, opts, out_dependencies=deps, print_source=outfile)
-            return functions, deps
+            return functions, deps, args.keep_output_dir
     else:
         if args.assembler is None:
             raise Failure("must pass assembler command")
