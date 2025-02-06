@@ -1,10 +1,10 @@
 [package]
 name = "asm-processor"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IDO-compiled C."
 license = "Unlicense"
-repository = "https://github.com/ethteck/asm-processor"
+repository = "https://github.com/simonlindholm/asm-processor"
 readme = "../README.md"
 keywords = ["decompilation", "ido", "mips", "asm"]
 
