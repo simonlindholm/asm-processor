@@ -14,7 +14,7 @@ After vendoring this repo into your repository, you will want to add a step to y
 Presuming this repo is available at `tools/asm-processor/`, the following command can be run to build the project:
 
 ```
-cargo build --release --frozen --manifest-path tools/asm-processor/rust/Cargo.toml
+cargo build --release --manifest-path tools/asm-processor/rust/Cargo.toml
 ```
 
 This will generate the executable at `tools/asm-processor/rust/target/release/asm-processor`. The build system for your project can then be configured to run `asm-processor` from this location.
