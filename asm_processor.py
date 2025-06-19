@@ -104,6 +104,17 @@ class ElfFormat:
         return struct.unpack(self.struct_char + fmt, data)
 
 
+class Encoding:
+    def __init__(self, encoding):
+        self.encoding = encoding
+        self.is_euc_jp = encoding.lower().replace("_", "").replace("-", "") == "eucjp"
+
+    def encode(self, s):
+        if self.is_euc_jp:
+            s = s.replace("～", "〜")
+        return s.encode(self.encoding)
+
+
 class ElfHeader:
     """
     typedef struct {
@@ -516,7 +527,7 @@ class GlobalAsmBlock:
         raise Failure(message + "\nwithin " + context)
 
     def count_quoted_size(self, line, z, real_line, output_enc):
-        line = line.encode(output_enc).decode('latin1')
+        line = output_enc.encode(line).decode('latin1')
         in_quote = False
         has_comma = True
         num_parts = 0
@@ -1037,10 +1048,10 @@ def parse_source(f, opts, out_dependencies, print_source=None):
             for line in output_lines:
                 print_source.write(line + '\n')
         else:
-            newline_encoded = "\n".encode(output_enc)
+            newline_encoded = output_enc.encode("\n")
             for line in output_lines:
                 try:
-                    line_encoded = line.encode(output_enc)
+                    line_encoded = output_enc.encode(line)
                 except UnicodeEncodeError:
                     print("Failed to encode a line to", output_enc)
                     print("The line:", line)
@@ -1149,7 +1160,7 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
     try:
         s_file.write(asm_prelude + b'\n')
         for line in asm:
-            s_file.write(line.encode(output_enc) + b'\n')
+            s_file.write(output_enc.encode(line) + b'\n')
         s_file.close()
         ret = os.system(assembler + " " + s_name + " -o " + o_name)
         if ret != 0:
@@ -1498,7 +1509,8 @@ def run_wrapped(argv, outfile, functions):
         raise Failure("-mips1 is only supported together with -O1 or -O2")
     if pascal and opt not in ('O1', 'O2', 'g3'):
         raise Failure("Pascal is only supported together with -O1, -O2 or -O2 -g3")
-    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, args.output_enc, args.encode_cutscene_data_floats)
+    output_enc = Encoding(args.output_enc)
+    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, output_enc, args.encode_cutscene_data_floats)
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:
@@ -1517,7 +1529,7 @@ def run_wrapped(argv, outfile, functions):
         if args.asm_prelude:
             with open(args.asm_prelude, 'rb') as f:
                 asm_prelude = f.read()
-        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, args.output_enc, args.drop_mdebug_gptab, args.convert_statics)
+        fixup_objfile(args.objfile, functions, asm_prelude, args.assembler, output_enc, args.drop_mdebug_gptab, args.convert_statics)
 
 def run(argv, outfile=sys.stdout.buffer, functions=None):
     try:
