@@ -369,7 +369,7 @@ impl GlobalAsmBlock {
             self.late_rodata_alignment = value;
             changed_section = true;
         } else if line.starts_with(".incbin") {
-            let size = line.split(',').last().unwrap().trim().parse::<isize>()?;
+            let size = line.split(',').next_back().unwrap().trim().parse::<isize>()?;
             self.add_sized(size, &real_line)?;
         } else if line.starts_with(".word")
             || line.starts_with(".gpword")
@@ -535,7 +535,7 @@ impl GlobalAsmBlock {
                         format!("switch (*(volatile int*)0) {{ {} ; }}", cases)
                     };
                     late_rodata_fn_output.push(line);
-                    late_rodata_fn_output.extend(iter::repeat("".to_owned()).take(jtbl_size - 1));
+                    late_rodata_fn_output.extend(iter::repeat_n("".to_owned(), jtbl_size - 1));
                     jtbl_rodata_size = (size - i) * 4;
                     extra_mips1_nop = i != 2;
                     break;
