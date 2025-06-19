@@ -369,7 +369,12 @@ impl GlobalAsmBlock {
             self.late_rodata_alignment = value;
             changed_section = true;
         } else if line.starts_with(".incbin") {
-            let size = line.split(',').next_back().unwrap().trim().parse::<isize>()?;
+            let size = line
+                .split(',')
+                .next_back()
+                .unwrap()
+                .trim()
+                .parse::<isize>()?;
             self.add_sized(size, &real_line)?;
         } else if line.starts_with(".word")
             || line.starts_with(".gpword")
