@@ -326,7 +326,7 @@ impl GlobalAsmBlock {
             || line.starts_with("alabel ")
             || line.starts_with("endlabel ")
             || line.starts_with("enddlabel ")
-            || line.starts_with("nmlabel ")
+            || line.starts_with("nonmatching ")
             || (!line.contains(" ") && line.ends_with(":"))
         {
             // label
