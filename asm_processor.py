@@ -575,12 +575,9 @@ class GlobalAsmBlock:
             self.fail(".ascii with no string", real_line)
         return ret + num_parts if z else ret
 
-    def align2(self):
-        while self.fn_section_sizes[self.cur_section] % 2 != 0:
-            self.fn_section_sizes[self.cur_section] += 1
-
-    def align4(self):
-        while self.fn_section_sizes[self.cur_section] % 4 != 0:
+    def align(self, n: int):
+        # n must be a power of two
+        while self.fn_section_sizes[self.cur_section] % n != 0:
             self.fn_section_sizes[self.cur_section] += 1
 
     def add_sized(self, size, line):
@@ -634,10 +631,10 @@ class GlobalAsmBlock:
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
         elif line.startswith('.word') or line.startswith('.gpword') or line.startswith('.float'):
-            self.align4()
+            self.align(4)
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
-            self.align4()
+            self.align(4)
             if self.cur_section == '.late_rodata':
                 align8 = self.fn_section_sizes[self.cur_section] % 8
                 # Automatically set late_rodata_alignment, so the generated C code uses doubles.
@@ -657,21 +654,33 @@ class GlobalAsmBlock:
             self.add_sized(int(line.split()[1], 0), real_line)
         elif line.startswith('.balign'):
             align = int(line.split()[1])
-            if align != 4:
+            if align == 4:
+                self.align(4)
+            elif align == 8:
+                if self.cur_section == '.late_rodata':
+                    self.align(8)
+                else:
+                    self.fail(".balign 8 is only supported in .late_rodata sections", real_line)
+            else:
                 self.fail("only .balign 4 is supported", real_line)
-            self.align4()
         elif line.startswith('.align'):
             align = int(line.split()[1])
-            if align != 2:
+            if align == 2:
+                self.align(4)
+            elif align == 3:
+                if self.cur_section == '.late_rodata':
+                    self.align(8)
+                else:
+                    self.fail(".align 3 is only supported in .late_rodata sections", real_line)
+            else:
                 self.fail("only .align 2 is supported", real_line)
-            self.align4()
         elif line.startswith('.asci'):
             z = (line.startswith('.asciz') or line.startswith('.asciiz'))
             self.add_sized(self.count_quoted_size(line, z, real_line, output_enc), real_line)
         elif line.startswith('.byte'):
             self.add_sized(len(line.split(',')), real_line)
         elif line.startswith('.half') or line.startswith('.hword') or line.startswith(".short"):
-            self.align2()
+            self.align(2)
             self.add_sized(2*len(line.split(',')), real_line)
         elif line.startswith('.size'):
             pass
