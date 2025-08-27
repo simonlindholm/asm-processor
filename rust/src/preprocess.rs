@@ -421,22 +421,32 @@ impl GlobalAsmBlock {
             let align = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             match align {
                 4 => self.align(4),
-                8 => if self.cur_section == InputSection::LateRodata {
-                    self.align(8)
-                } else {
-                    return self.fail_at_line(".balign 8 is only supported in .late_rodata sections", &real_line)
-                },
+                8 => {
+                    if self.cur_section == InputSection::LateRodata {
+                        self.align(8)
+                    } else {
+                        return self.fail_at_line(
+                            ".balign 8 is only supported in .late_rodata sections",
+                            &real_line,
+                        );
+                    }
+                }
                 _ => return self.fail_at_line("only .balign 4 is supported", &real_line),
             }
         } else if line.starts_with(".align") {
             let align = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             match align {
                 2 => self.align(4),
-                3 => if self.cur_section == InputSection::LateRodata {
-                    self.align(8)
-                } else {
-                    return self.fail_at_line(".align 3 is only supported in .late_rodata sections", &real_line)
-                },
+                3 => {
+                    if self.cur_section == InputSection::LateRodata {
+                        self.align(8)
+                    } else {
+                        return self.fail_at_line(
+                            ".align 3 is only supported in .late_rodata sections",
+                            &real_line,
+                        );
+                    }
+                }
                 _ => return self.fail_at_line("only .align 2 is supported", &real_line),
             }
         } else if line.starts_with(".asci") {
