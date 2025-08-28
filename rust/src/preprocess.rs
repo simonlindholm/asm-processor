@@ -247,6 +247,7 @@ impl GlobalAsmBlock {
     }
 
     fn align(&mut self, n: usize) {
+        // n must be 2 or 4
         let size = &mut self.fn_section_sizes[self.cur_section];
         while *size % n != 0 {
             *size += 1;

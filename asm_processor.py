@@ -576,7 +576,7 @@ class GlobalAsmBlock:
         return ret + num_parts if z else ret
 
     def align(self, n: int):
-        # n must be a power of two
+        # n must be 2 or 4
         while self.fn_section_sizes[self.cur_section] % n != 0:
             self.fn_section_sizes[self.cur_section] += 1
 
