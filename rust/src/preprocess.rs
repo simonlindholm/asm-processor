@@ -253,6 +253,30 @@ impl GlobalAsmBlock {
         }
     }
 
+    fn fixup_late_rodata_alignment_8(&mut self, real_line: &str) -> Result<()> {
+        let align8 = self.fn_section_sizes[self.cur_section] % 8;
+        // Automatically set late_rodata_alignment, so the generated C code uses doubles.
+        // This gives us correct alignment for the transferred doubles even when the
+        // late_rodata_alignment is wrong, e.g. for non-matching compilation.
+        if self.late_rodata_alignment == 0 {
+            self.late_rodata_alignment = 8 - align8;
+            self.late_rodata_alignment_from_context = true;
+        } else if self.late_rodata_alignment != 8 - align8 {
+            if self.late_rodata_alignment_from_context {
+                return self.fail_at_line(
+                    "found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.",
+                    real_line
+                );
+            } else {
+                return self.fail_at_line(
+                    ".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.\n{}",
+                    real_line
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn add_sized(&mut self, size: isize, line: &str) -> Result<()> {
         if (self.cur_section == InputSection::Text || self.cur_section == InputSection::LateRodata)
             && size % 4 != 0
@@ -303,7 +327,7 @@ impl GlobalAsmBlock {
             }
         }
 
-        let real_line = line.clone();
+        let mut real_line = line.clone();
         line = re_comment_or_string
             .replace_all(&line, re_comment_replacer)
             .into_owned();
@@ -390,26 +414,7 @@ impl GlobalAsmBlock {
             self.align(4);
 
             if self.cur_section == InputSection::LateRodata {
-                let align8 = self.fn_section_sizes[self.cur_section] % 8;
-                // Automatically set late_rodata_alignment, so the generated C code uses doubles.
-                // This gives us correct alignment for the transferred doubles even when the
-                // late_rodata_alignment is wrong, e.g. for non-matching compilation.
-                if self.late_rodata_alignment == 0 {
-                    self.late_rodata_alignment = 8 - align8;
-                    self.late_rodata_alignment_from_context = true;
-                } else if self.late_rodata_alignment != 8 - align8 {
-                    if self.late_rodata_alignment_from_context {
-                        return self.fail_at_line(
-                            "found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.",
-                            &real_line
-                        );
-                    } else {
-                        return self.fail_at_line(
-                            ".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.\n{}",
-                            &real_line
-                        );
-                    }
-                }
+                self.fixup_late_rodata_alignment_8(&real_line)?;
 
                 self.add_sized(8 * line.split(',').count() as isize, &real_line)?;
                 emitting_double = true;
@@ -423,7 +428,9 @@ impl GlobalAsmBlock {
                 4 => self.align(4),
                 8 => {
                     if self.cur_section == InputSection::LateRodata {
-                        self.align(8)
+                        self.align(4);
+                        self.fixup_late_rodata_alignment_8(&real_line)?;
+                        real_line = ".balign 4".to_string();
                     } else {
                         return self.fail_at_line(
                             ".balign 8 is only supported in .late_rodata sections",
@@ -439,7 +446,9 @@ impl GlobalAsmBlock {
                 2 => self.align(4),
                 3 => {
                     if self.cur_section == InputSection::LateRodata {
-                        self.align(8)
+                        self.align(4);
+                        self.fixup_late_rodata_alignment_8(&real_line)?;
+                        real_line = ".align 2".to_string();
                     } else {
                         return self.fail_at_line(
                             ".align 3 is only supported in .late_rodata sections",
