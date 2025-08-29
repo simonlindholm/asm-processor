@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use binrw::{binrw, BinRead, BinResult, BinWrite, Endian};
+use binrw::{BinRead, BinResult, BinWrite, Endian, binrw};
 use enum_map::EnumMap;
 use temp_dir::TempDir;
 
@@ -1029,8 +1029,9 @@ pub(crate) fn fixup_objfile(
     }
 
     // Add static symbols from .mdebug, so they can be referred to from GLOBAL_ASM
-    if mdebug_section.is_some() && convert_statics != ConvertStatics::No {
-        let mdebug_section = mdebug_section.unwrap();
+    if let Some(mdebug_section) = mdebug_section
+        && convert_statics != ConvertStatics::No
+    {
         let mut static_name_count: HashMap<Vec<u8>, usize> = HashMap::new();
         let mut strtab_index = objfile.sym_strtab().data.len();
         let mut new_strtab_data = vec![];

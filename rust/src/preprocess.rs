@@ -370,7 +370,7 @@ impl GlobalAsmBlock {
                 match InputSection::from_str(name) {
                     Some(s) => s,
                     None => {
-                        return self.fail_at_line("unrecognized .section directive", &real_line)
+                        return self.fail_at_line("unrecognized .section directive", &real_line);
                     }
                 }
             };

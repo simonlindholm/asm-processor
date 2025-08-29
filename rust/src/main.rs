@@ -8,7 +8,7 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
-    process::{exit, Command},
+    process::{Command, exit},
     str::FromStr,
 };
 
@@ -334,18 +334,18 @@ fn from_args_allow_eq(progname: &[&str], args: &[OsString]) -> Result<AsmProcArg
     let mut args = args.to_vec();
     while i < args.len() {
         let arg = args[i].as_encoded_bytes();
-        if arg.starts_with(b"--") {
-            if let Some(eq) = arg.iter().position(|&x| x == b'=') {
-                // SAFETY: splitting on ASCII still results in valid encoded bytes
-                let before = unsafe { OsString::from_encoded_bytes_unchecked(arg[0..eq].into()) };
-                let after = unsafe { OsString::from_encoded_bytes_unchecked(arg[eq + 1..].into()) };
-                args.splice(i..i + 1, [before, after]);
-                let new_res = AsmProcArgs::from_args(progname, &args);
-                if new_res.is_ok() {
-                    return new_res;
-                }
-                i += 1;
+        if arg.starts_with(b"--")
+            && let Some(eq) = arg.iter().position(|&x| x == b'=')
+        {
+            // SAFETY: splitting on ASCII still results in valid encoded bytes
+            let before = unsafe { OsString::from_encoded_bytes_unchecked(arg[0..eq].into()) };
+            let after = unsafe { OsString::from_encoded_bytes_unchecked(arg[eq + 1..].into()) };
+            args.splice(i..i + 1, [before, after]);
+            let new_res = AsmProcArgs::from_args(progname, &args);
+            if new_res.is_ok() {
+                return new_res;
             }
+            i += 1;
         }
         i += 1;
     }
