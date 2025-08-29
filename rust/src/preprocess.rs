@@ -4,7 +4,7 @@ use anyhow::Result;
 use enum_map::{Enum, EnumMap};
 use regex_lite::Regex;
 
-use crate::{AsmProcArgs, CompileOpts, Encoding, Function, OptLevel, OutputSection};
+use crate::{AsmProcArgs, CompileOpts, Encoding, Function, OptLevel, OutputSection, SectionSizing};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Enum)]
 enum InputSection {
@@ -136,10 +136,8 @@ struct GlobalAsmBlock {
     cur_section: InputSection,
     asm_conts: Vec<String>,
     late_rodata_asm_conts: Vec<String>,
-    late_rodata_alignment: usize,
-    late_rodata_alignment_from_context: bool,
     text_glabels: Vec<String>,
-    fn_section_sizes: EnumMap<InputSection, usize>,
+    fn_section_sizes: EnumMap<InputSection, SectionSizing>,
     fn_ins_inds: Vec<(usize, usize)>,
     glued_line: String,
     num_lines: usize,
@@ -152,8 +150,6 @@ impl GlobalAsmBlock {
             cur_section: InputSection::Text,
             asm_conts: vec![],
             late_rodata_asm_conts: vec![],
-            late_rodata_alignment: 0,
-            late_rodata_alignment_from_context: false,
             text_glabels: vec![],
             fn_section_sizes: EnumMap::default(),
             fn_ins_inds: vec![],
@@ -248,22 +244,21 @@ impl GlobalAsmBlock {
 
     fn align(&mut self, n: usize) {
         // n must be 2 or 4
-        let size = &mut self.fn_section_sizes[self.cur_section];
+        let size = &mut self.fn_section_sizes[self.cur_section].size;
         while *size % n != 0 {
             *size += 1;
         }
     }
 
-    fn fixup_late_rodata_alignment_8(&mut self, real_line: &str) -> Result<()> {
-        let align8 = self.fn_section_sizes[self.cur_section] % 8;
-        // Automatically set late_rodata_alignment, so the generated C code uses doubles.
-        // This gives us correct alignment for the transferred doubles even when the
-        // late_rodata_alignment is wrong, e.g. for non-matching compilation.
-        if self.late_rodata_alignment == 0 {
-            self.late_rodata_alignment = 8 - align8;
-            self.late_rodata_alignment_from_context = true;
-        } else if self.late_rodata_alignment != 8 - align8 {
-            if self.late_rodata_alignment_from_context {
+    fn align8(&mut self, real_line: &str) -> Result<()> {
+        self.align(4);
+        let s = &mut self.fn_section_sizes[self.cur_section];
+        let align8 = s.size % 8;
+        if s.align8 == 0 {
+            s.align8 = 8 - align8;
+            s.aligned_from_context = true;
+        } else if s.align8 != 8 - align8 {
+            if s.aligned_from_context {
                 return self.fail_at_line(
                     "found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.",
                     real_line
@@ -289,7 +284,7 @@ impl GlobalAsmBlock {
             return self.fail_at_line("size cannot be negative", line);
         }
 
-        self.fn_section_sizes[self.cur_section] += size as usize;
+        self.fn_section_sizes[self.cur_section].size += size as usize;
 
         if self.cur_section == InputSection::Text {
             if self.text_glabels.is_empty() {
@@ -389,12 +384,13 @@ impl GlobalAsmBlock {
                 return self
                     .fail_at_line(".late_rodata_alignment argument must be 4 or 8", &real_line);
             }
-            if self.late_rodata_alignment != 0 && self.late_rodata_alignment != value {
+            let s = &mut self.fn_section_sizes[InputSection::LateRodata];
+            if s.align8 != 0 && s.align8 != value {
                 return self.fail_without_line(
                     ".late_rodata_alignment alignment assumption conflicts with earlier .double directive. Make sure to provide explicit alignment padding."
                 );
             }
-            self.late_rodata_alignment = value;
+            s.align8 = value;
             changed_section = true;
         } else if line.starts_with(".incbin") {
             let size = line
@@ -412,14 +408,9 @@ impl GlobalAsmBlock {
 
             self.add_sized(4 * line.split(',').count() as isize, &real_line)?;
         } else if line.starts_with(".double") {
-            self.align(4);
-
-            if self.cur_section == InputSection::LateRodata {
-                self.fixup_late_rodata_alignment_8(&real_line)?;
-
-                self.add_sized(8 * line.split(',').count() as isize, &real_line)?;
-                emitting_double = true;
-            }
+            self.align8(&real_line)?;
+            self.add_sized(8 * line.split(',').count() as isize, &real_line)?;
+            emitting_double = true;
         } else if line.starts_with(".space") {
             let size = line.split_whitespace().nth(1).unwrap().parse::<isize>()?;
             self.add_sized(size, &real_line)?;
@@ -428,16 +419,8 @@ impl GlobalAsmBlock {
             match align {
                 4 => self.align(4),
                 8 => {
-                    if self.cur_section == InputSection::LateRodata {
-                        self.align(4);
-                        self.fixup_late_rodata_alignment_8(&real_line)?;
-                        real_line = ".balign 4".to_string();
-                    } else {
-                        return self.fail_at_line(
-                            ".balign 8 is only supported in .late_rodata sections",
-                            &real_line,
-                        );
-                    }
+                    self.align8(&real_line)?;
+                    real_line = ".balign 4".to_string();
                 }
                 _ => return self.fail_at_line("only .balign 4 is supported", &real_line),
             }
@@ -446,16 +429,8 @@ impl GlobalAsmBlock {
             match align {
                 2 => self.align(4),
                 3 => {
-                    if self.cur_section == InputSection::LateRodata {
-                        self.align(4);
-                        self.fixup_late_rodata_alignment_8(&real_line)?;
-                        real_line = ".align 2".to_string();
-                    } else {
-                        return self.fail_at_line(
-                            ".align 3 is only supported in .late_rodata sections",
-                            &real_line,
-                        );
-                    }
+                    self.align8(&real_line)?;
+                    real_line = ".align 2".to_string();
                 }
                 _ => return self.fail_at_line("only .align 2 is supported", &real_line),
             }
@@ -499,13 +474,13 @@ impl GlobalAsmBlock {
                 if emitting_double {
                     self.late_rodata_asm_conts.push(".align 0".to_string());
                 }
-                self.late_rodata_asm_conts.push(real_line.clone());
+                self.late_rodata_asm_conts.push(real_line);
                 if emitting_double {
                     self.late_rodata_asm_conts.push(".align 2".to_string());
                 }
             }
         } else {
-            self.asm_conts.push(real_line.clone());
+            self.asm_conts.push(real_line);
         }
 
         Ok(())
@@ -519,16 +494,21 @@ impl GlobalAsmBlock {
         let mut jtbl_rodata_size = 0;
         let mut late_rodata_fn_output = vec![];
 
-        let num_instr = self.fn_section_sizes[InputSection::Text] / 4;
+        let num_instr = self.fn_section_sizes[InputSection::Text].size / 4;
+        let late_rodata_alignment = self.fn_section_sizes[InputSection::LateRodata].align8;
 
-        if self.fn_section_sizes[InputSection::LateRodata] > 0 {
+        if self.fn_section_sizes[InputSection::LateRodata].size > 0 {
             // Generate late rodata by emitting unique float constants.
             // This requires 3 instructions for each 4 bytes of rodata.
             // If we know alignment, we can use doubles, which give 3
             // instructions for 8 bytes of rodata.
-            let size = self.fn_section_sizes[InputSection::LateRodata] / 4;
+            // If the alignment was inferred from .double directives, the use
+            // of doubles is even necessary for correctness in the face of
+            // non-matching compilation: it makes sure the .doubles do not
+            // end up misaligned if the .late_rodata is shifted.
+            let size = self.fn_section_sizes[InputSection::LateRodata].size / 4;
             let mut skip_next = false;
-            let mut needs_double = self.late_rodata_alignment != 0;
+            let mut needs_double = late_rodata_alignment != 0;
             let mut extra_mips1_nop = false;
             let (jtbl_size, jtbl_min_rodata_size) = match (state.pascal, state.mips1) {
                 (true, true) => (9, 2),
@@ -581,7 +561,7 @@ impl GlobalAsmBlock {
 
                 let dummy_bytes = state.next_late_rodata_hex();
                 late_rodata_dummy_bytes.push(dummy_bytes);
-                if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) && i + 1 < size {
+                if late_rodata_alignment == 4 * ((i + 1) % 2 + 1) && i + 1 < size {
                     let dummy_bytes2 = state.next_late_rodata_hex();
                     late_rodata_dummy_bytes.push(dummy_bytes2);
                     let combined = [dummy_bytes, dummy_bytes2].concat().try_into().unwrap();
@@ -620,12 +600,12 @@ impl GlobalAsmBlock {
         }
 
         let mut text_name = None;
-        if self.fn_section_sizes[InputSection::Text] > 0 || !late_rodata_fn_output.is_empty() {
+        if self.fn_section_sizes[InputSection::Text].size > 0 || !late_rodata_fn_output.is_empty() {
             let new_name = state.make_name("func");
             src[0] = state.func_prologue(&new_name);
             text_name = Some(new_name);
             src[self.num_lines] = state.func_epilogue();
-            let instr_count = self.fn_section_sizes[InputSection::Text] / 4;
+            let instr_count = self.fn_section_sizes[InputSection::Text].size / 4;
             if instr_count < state.min_instr_count {
                 return self.fail_without_line("too short .text block");
             }
@@ -695,7 +675,7 @@ impl GlobalAsmBlock {
         }
 
         let mut rodata_name = None;
-        if self.fn_section_sizes[InputSection::Rodata] > 0 {
+        if self.fn_section_sizes[InputSection::Rodata].size > 0 {
             if state.pascal {
                 return self.fail_without_line(".rodata isn't supported with Pascal for now");
             }
@@ -703,25 +683,25 @@ impl GlobalAsmBlock {
             src[self.num_lines] += &format!(
                 " const char {}[{}] = {{1}};",
                 new_name,
-                self.fn_section_sizes[InputSection::Rodata]
+                self.fn_section_sizes[InputSection::Rodata].size
             );
             rodata_name = Some(new_name);
         }
 
         let mut data_name = None;
-        if self.fn_section_sizes[InputSection::Data] > 0 {
+        if self.fn_section_sizes[InputSection::Data].size > 0 {
             let new_name = state.make_name("data");
             let line = if state.pascal {
                 format!(
                     " var {}: packed array[1..{}] of char := [otherwise: 0];",
                     new_name,
-                    self.fn_section_sizes[InputSection::Data]
+                    self.fn_section_sizes[InputSection::Data].size
                 )
             } else {
                 format!(
                     " char {}[{}] = {{1}};",
                     new_name,
-                    self.fn_section_sizes[InputSection::Data]
+                    self.fn_section_sizes[InputSection::Data].size
                 )
             };
             src[self.num_lines] += &line;
@@ -729,7 +709,7 @@ impl GlobalAsmBlock {
         }
 
         let mut bss_name = None;
-        if self.fn_section_sizes[InputSection::Bss] > 0 {
+        if self.fn_section_sizes[InputSection::Bss].size > 0 {
             let new_name = state.make_name("bss");
             if state.pascal {
                 return self.fail_without_line(".bss isn't supported with Pascal for now");
@@ -737,7 +717,7 @@ impl GlobalAsmBlock {
             src[self.num_lines] += &format!(
                 " char {}[{}];",
                 new_name,
-                self.fn_section_sizes[InputSection::Bss]
+                self.fn_section_sizes[InputSection::Bss].size
             );
             bss_name = Some(new_name);
         }

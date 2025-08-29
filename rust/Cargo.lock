@@ -37,7 +37,7 @@ checksum = "3d62b7694a562cdf5a74227903507c56ab2cc8bdd1f781ed5cb4cf9c9f810bfc"
 
 [[package]]
 name = "asm-processor"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "argp",

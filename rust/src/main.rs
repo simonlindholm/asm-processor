@@ -46,6 +46,13 @@ impl Display for OutputSection {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+struct SectionSizing {
+    size: usize,
+    align8: usize,
+    aligned_from_context: bool,
+}
+
 #[derive(Clone, Debug)]
 struct Function {
     text_glabels: Vec<String>,
@@ -54,7 +61,7 @@ struct Function {
     jtbl_rodata_size: usize,
     late_rodata_asm_conts: Vec<String>,
     fn_desc: String,
-    data: EnumMap<OutputSection, (Option<String>, usize)>,
+    data: EnumMap<OutputSection, (Option<String>, SectionSizing)>,
 }
 
 #[derive(Clone, Copy, Debug)]

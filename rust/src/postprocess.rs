@@ -638,6 +638,7 @@ pub(crate) fn fixup_objfile(
     let endian = objfile.endian;
 
     let mut prev_locs: EnumMap<OutputSection, usize> = EnumMap::default();
+    let mut seen_non_global_asm: EnumMap<OutputSection, bool> = EnumMap::default();
 
     struct ToCopyData {
         loc: usize,
@@ -668,9 +669,9 @@ pub(crate) fn fixup_objfile(
             .map(|x| output_enc.encode(x))
             .collect::<Result<Vec<_>>>()?;
         let mut ifdefed = false;
-        for (sectype, &(ref temp_name, size)) in function.data.iter() {
+        for (sectype, &(ref temp_name, sizing)) in function.data.iter() {
             let Some(temp_name) = temp_name else { continue };
-            if size == 0 {
+            if sizing.size == 0 {
                 panic!("Size of section {} is 0", sectype.as_str());
             }
             let Some((_, loc)) = objfile.find_symbol(temp_name.as_bytes()) else {
@@ -691,6 +692,7 @@ pub(crate) fn fixup_objfile(
                 );
             }
             if loc != prev_loc {
+                seen_non_global_asm[sectype] = true;
                 asm.push(format!(".section {}", sectype));
                 if sectype == OutputSection::Text {
                     for _ in 0..((loc - prev_loc) / 4) {
@@ -700,16 +702,23 @@ pub(crate) fn fixup_objfile(
                     asm.push(format!(".space {}", loc - prev_loc));
                 }
             }
+            if sizing.align8 != 0 && sizing.align8 != 8 - loc % 8 {
+                return Err(anyhow::anyhow!(
+                    "{} has unexpected alignment mod 8 for section {}. Please provide explicit alignment padding.",
+                    function.fn_desc,
+                    sectype
+                ));
+            }
             to_copy[sectype].push(ToCopyData {
                 loc,
-                size,
+                size: sizing.size,
                 temp_name: temp_name.clone(),
                 fn_desc: function.fn_desc.clone(),
             });
             if !text_glabels.is_empty() && sectype == OutputSection::Text {
-                func_sizes.insert(text_glabels[0].to_vec(), size);
+                func_sizes.insert(text_glabels[0].to_vec(), sizing.size);
             }
-            prev_locs[sectype] = loc + size;
+            prev_locs[sectype] = loc + sizing.size;
         }
 
         if !ifdefed {

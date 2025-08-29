@@ -500,21 +500,28 @@ class GlobalState:
 Function = namedtuple('Function', ['text_glabels', 'asm_conts', 'late_rodata_dummy_bytes', 'jtbl_rodata_size', 'late_rodata_asm_conts', 'fn_desc', 'data'])
 
 
+class SectionSizing:
+    __slots__ = ["size", "align8", "aligned_from_context"]
+
+    def __init__(self):
+        self.size = 0
+        self.align8 = 0
+        self.aligned_from_context = False
+
+
 class GlobalAsmBlock:
     def __init__(self, fn_desc):
         self.fn_desc = fn_desc
         self.cur_section = '.text'
         self.asm_conts = []
         self.late_rodata_asm_conts = []
-        self.late_rodata_alignment = 0
-        self.late_rodata_alignment_from_content = False
         self.text_glabels = []
         self.fn_section_sizes = {
-            '.text': 0,
-            '.data': 0,
-            '.bss': 0,
-            '.rodata': 0,
-            '.late_rodata': 0,
+            '.text': SectionSizing(),
+            '.data': SectionSizing(),
+            '.bss': SectionSizing(),
+            '.rodata': SectionSizing(),
+            '.late_rodata': SectionSizing(),
         }
         self.fn_ins_inds = []
         self.glued_line = ''
@@ -575,21 +582,21 @@ class GlobalAsmBlock:
             self.fail(".ascii with no string", real_line)
         return ret + num_parts if z else ret
 
-    def align(self, n: int):
+    def align(self, n):
         # n must be 2 or 4
-        while self.fn_section_sizes[self.cur_section] % n != 0:
-            self.fn_section_sizes[self.cur_section] += 1
+        s = self.fn_section_sizes[self.cur_section]
+        while s.size % n != 0:
+            s.size += 1
 
-    def fixup_late_rodata_alignment_8(self, real_line: str):
-        align8 = self.fn_section_sizes[self.cur_section] % 8
-        # Automatically set late_rodata_alignment, so the generated C code uses doubles.
-        # This gives us correct alignment for the transferred doubles even when the
-        # late_rodata_alignment is wrong, e.g. for non-matching compilation.
-        if not self.late_rodata_alignment:
-            self.late_rodata_alignment = 8 - align8
-            self.late_rodata_alignment_from_content = True
-        elif self.late_rodata_alignment != 8 - align8:
-            if self.late_rodata_alignment_from_content:
+    def align8(self, real_line):
+        self.align(4)
+        s = self.fn_section_sizes[self.cur_section]
+        align8 = s.size % 8
+        if not s.align8:
+            s.align8 = 8 - align8
+            s.aligned_from_context = True
+        elif s.align8 != 8 - align8:
+            if s.aligned_from_context:
                 self.fail("found two .double directives with different start addresses mod 8. Make sure to provide explicit alignment padding.", real_line)
             else:
                 self.fail(".double at address that is not 0 mod 8 (based on .late_rodata_alignment assumption). Make sure to provide explicit alignment padding.", real_line)
@@ -600,7 +607,7 @@ class GlobalAsmBlock:
                 self.fail("size must be a multiple of 4", line)
         if size < 0:
             self.fail("size cannot be negative", line)
-        self.fn_section_sizes[self.cur_section] += size
+        self.fn_section_sizes[self.cur_section].size += size
         if self.cur_section == '.text':
             if not self.text_glabels:
                 self.fail(".text block without an initial glabel", line)
@@ -638,9 +645,10 @@ class GlobalAsmBlock:
             value = int(line.split()[1])
             if value not in [4, 8]:
                 self.fail(".late_rodata_alignment argument must be 4 or 8", real_line)
-            if self.late_rodata_alignment and self.late_rodata_alignment != value:
+            s = self.fn_section_sizes['.late_rodata']
+            if s.align8 and s.align8 != value:
                 self.fail(".late_rodata_alignment alignment assumption conflicts with earlier .double directive. Make sure to provide explicit alignment padding.")
-            self.late_rodata_alignment = value
+            s.align8 = value
             changed_section = True
         elif line.startswith('.incbin'):
             self.add_sized(int(line.split(',')[-1].strip(), 0), real_line)
@@ -648,9 +656,7 @@ class GlobalAsmBlock:
             self.align(4)
             self.add_sized(4 * len(line.split(',')), real_line)
         elif line.startswith('.double'):
-            self.align(4)
-            if self.cur_section == '.late_rodata':
-                self.fixup_late_rodata_alignment_8(real_line)
+            self.align8(real_line)
             self.add_sized(8 * len(line.split(',')), real_line)
             emitting_double = True
         elif line.startswith('.space'):
@@ -660,12 +666,8 @@ class GlobalAsmBlock:
             if align == 4:
                 self.align(4)
             elif align == 8:
-                if self.cur_section == '.late_rodata':
-                    self.align(4)
-                    self.fixup_late_rodata_alignment_8(real_line)
-                    real_line = ".balign 4"
-                else:
-                    self.fail(".balign 8 is only supported in .late_rodata sections", real_line)
+                self.align8(real_line)
+                real_line = ".balign 4"
             else:
                 self.fail("only .balign 4 is supported", real_line)
         elif line.startswith('.align'):
@@ -673,12 +675,8 @@ class GlobalAsmBlock:
             if align == 2:
                 self.align(4)
             elif align == 3:
-                if self.cur_section == '.late_rodata':
-                    self.align(4)
-                    self.fixup_late_rodata_alignment_8(real_line)
-                    real_line = ".align 2"
-                else:
-                    self.fail(".align 3 is only supported in .late_rodata sections", real_line)
+                self.align8(real_line)
+                real_line = ".align 2"
             else:
                 self.fail("only .align 2 is supported", real_line)
         elif line.startswith('.asci'):
@@ -722,16 +720,21 @@ class GlobalAsmBlock:
         jtbl_rodata_size = 0
         late_rodata_fn_output = []
 
-        num_instr = self.fn_section_sizes['.text'] // 4
+        num_instr = self.fn_section_sizes['.text'].size // 4
+        late_rodata_alignment = self.fn_section_sizes['.late_rodata'].align8
 
-        if self.fn_section_sizes['.late_rodata'] > 0:
+        if self.fn_section_sizes['.late_rodata'].size > 0:
             # Generate late rodata by emitting unique float constants.
             # This requires 3 instructions for each 4 bytes of rodata.
             # If we know alignment, we can use doubles, which give 3
             # instructions for 8 bytes of rodata.
-            size = self.fn_section_sizes['.late_rodata'] // 4
+            # If the alignment was inferred from .double directives, the use
+            # of doubles is even necessary for correctness in the face of
+            # non-matching compilation: it makes sure the .doubles do not
+            # end up misaligned if the .late_rodata is shifted.
+            size = self.fn_section_sizes['.late_rodata'].size // 4
             skip_next = False
-            needs_double = (self.late_rodata_alignment != 0)
+            needs_double = (late_rodata_alignment != 0)
             extra_mips1_nop = False
             if state.pascal:
                 jtbl_size = 9 if state.mips1 else 8
@@ -770,7 +773,7 @@ class GlobalAsmBlock:
                     break
                 dummy_bytes = state.next_late_rodata_hex()
                 late_rodata_dummy_bytes.append(dummy_bytes)
-                if self.late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
+                if late_rodata_alignment == 4 * ((i + 1) % 2 + 1) and i + 1 < size:
                     dummy_bytes2 = state.next_late_rodata_hex()
                     late_rodata_dummy_bytes.append(dummy_bytes2)
                     fval, = struct.unpack('>d', dummy_bytes + dummy_bytes2)
@@ -800,11 +803,11 @@ class GlobalAsmBlock:
                 late_rodata_fn_output.append('')
 
         text_name = None
-        if self.fn_section_sizes['.text'] > 0 or late_rodata_fn_output:
+        if self.fn_section_sizes['.text'].size > 0 or late_rodata_fn_output:
             text_name = state.make_name('func')
             src[0] = state.func_prologue(text_name)
             src[self.num_lines] = state.func_epilogue()
-            instr_count = self.fn_section_sizes['.text'] // 4
+            instr_count = self.fn_section_sizes['.text'].size // 4
             if instr_count < state.min_instr_count:
                 self.fail("too short .text block")
             tot_emitted = 0
@@ -854,27 +857,27 @@ class GlobalAsmBlock:
                         .format(size, available))
 
         rodata_name = None
-        if self.fn_section_sizes['.rodata'] > 0:
+        if self.fn_section_sizes['.rodata'].size > 0:
             if state.pascal:
                 self.fail(".rodata isn't supported with Pascal for now")
             rodata_name = state.make_name('rodata')
-            src[self.num_lines] += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'])
+            src[self.num_lines] += ' const char {}[{}] = {{1}};'.format(rodata_name, self.fn_section_sizes['.rodata'].size)
 
         data_name = None
-        if self.fn_section_sizes['.data'] > 0:
+        if self.fn_section_sizes['.data'].size > 0:
             data_name = state.make_name('data')
             if state.pascal:
-                line = ' var {}: packed array[1..{}] of char := [otherwise: 0];'.format(data_name, self.fn_section_sizes['.data'])
+                line = ' var {}: packed array[1..{}] of char := [otherwise: 0];'.format(data_name, self.fn_section_sizes['.data'].size)
             else:
-                line = ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'])
+                line = ' char {}[{}] = {{1}};'.format(data_name, self.fn_section_sizes['.data'].size)
             src[self.num_lines] += line
 
         bss_name = None
-        if self.fn_section_sizes['.bss'] > 0:
+        if self.fn_section_sizes['.bss'].size > 0:
             if state.pascal:
                 self.fail(".bss isn't supported with Pascal")
             bss_name = state.make_name('bss')
-            src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'])
+            src[self.num_lines] += ' char {}[{}];'.format(bss_name, self.fn_section_sizes['.bss'].size)
 
         fn = Function(
                 text_glabels=self.text_glabels,
@@ -1112,10 +1115,10 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
     func_sizes = {}
     for function in functions:
         ifdefed = False
-        for sectype, (temp_name, size) in function.data.items():
+        for sectype, (temp_name, sizing) in function.data.items():
             if temp_name is None:
                 continue
-            assert size > 0
+            assert sizing.size > 0
             loc = objfile.find_symbol(temp_name)
             if loc is None:
                 ifdefed = True
@@ -1136,10 +1139,12 @@ def fixup_objfile(objfile_name, functions, asm_prelude, assembler, output_enc, d
                         asm.append('nop')
                 else:
                     asm.append('.space {}'.format(loc - prev_loc))
-            to_copy[sectype].append((loc, size, temp_name, function.fn_desc))
+            if sizing.align8 != 0 and sizing.align8 != 8 - loc % 8:
+                raise Failure(f"{function.fn_desc} has unexpected alignment mod 8 for section {sectype}. Please provide explicit alignment padding.")
+            to_copy[sectype].append((loc, sizing.size, temp_name, function.fn_desc))
             if function.text_glabels and sectype == '.text':
-                func_sizes[function.text_glabels[0]] = size
-            prev_locs[sectype] = loc + size
+                func_sizes[function.text_glabels[0]] = sizing.size
+            prev_locs[sectype] = loc + sizing.size
         if not ifdefed:
             all_text_glabels.update(function.text_glabels)
             all_late_rodata_dummy_bytes.append(function.late_rodata_dummy_bytes)

@@ -1,6 +1,6 @@
 [package]
 name = "asm-processor"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "Pre-process .c files and post-process .o files to enable embedding MIPS assembly into IDO-compiled C."
 license = "Unlicense"

@@ -2,6 +2,17 @@
 set -o pipefail
 INPUT=$(readlink -f "$1")
 
+if [[ "$2" == "python" ]]; then
+    PROG="python3 ./build.py"
+elif [[ "$2" == "rust-release" ]]; then
+    PROG="./rust/target/release/asm-processor"
+elif [[ "$2" == "rust-debug" ]]; then
+    PROG="./rust/target/debug/asm-processor"
+else
+    echo "Usage: $0 input.c (python|rust-release|rust-debug)"
+    exit 1
+fi
+
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 WD=$(pwd)
 INPUT=${INPUT#"$WD"/}
@@ -23,19 +34,9 @@ if [[ -z "$ISET" ]]; then
     CFLAGS="$CFLAGS -mips2"
 fi
 if [[ "$OPTFLAGS" != *-KPIC* ]]; then
-	CFLAGS="$CFLAGS -non_shared"
+    CFLAGS="$CFLAGS -non_shared"
 fi
 
 set -e
-
-if [[ "$2" == "python" ]]; then
-    PROG="python3 ./build.py"
-elif [[ "$2" == "rust-release" ]]; then
-    PROG="./rust/target/release/asm-processor"
-elif [[ "$2" == "rust-debug" ]]; then
-    PROG="./rust/target/debug/asm-processor"
-else
-	echo "Usage: $0 input.c (python|rust-release|rust-debug)"
-fi
 
 $PROG --drop-mdebug-gptab $ASMPFLAGS $CC -- $AS $ASFLAGS -- $CFLAGS $OPTFLAGS $ISET -o "$OUTPUT" "$INPUT"
