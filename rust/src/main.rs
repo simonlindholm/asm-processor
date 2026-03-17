@@ -519,7 +519,7 @@ fn main() -> Result<()> {
         for dep in res.deps {
             writeln!(deps_file, "\n{dep}:")?;
         }
-    } else {
+    } else if !args.no_dep_file {
         let _ = fs::remove_file(&deps_file);
     }
 

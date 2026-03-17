@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
             f.write(str(out_file) + ": " + " \\\n    ".join(deps) + "\n")
             for dep in deps:
                 f.write("\n" + dep + ":\n")
-    else:
+    elif "--no-dep-file" not in asmproc_flags:
         try:
             deps_file.unlink()
         except OSError:
