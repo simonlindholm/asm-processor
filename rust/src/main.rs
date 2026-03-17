@@ -505,19 +505,23 @@ fn main() -> Result<()> {
         )?;
     }
 
-    if !res.deps.is_empty() && !args.no_dep_file {
+    if !args.no_dep_file {
         let deps_file = out_file.with_extension("asmproc.d");
-        let mut deps_file = File::create(&deps_file)?;
+        if !res.deps.is_empty() {
+            let mut deps_file = File::create(&deps_file)?;
 
-        writeln!(
-            deps_file,
-            "{}: {}",
-            out_file.to_str().unwrap(),
-            res.deps.join(" \\\n    ")
-        )?;
+            writeln!(
+                deps_file,
+                "{}: {}",
+                out_file.to_str().unwrap(),
+                res.deps.join(" \\\n    ")
+            )?;
 
-        for dep in res.deps {
-            writeln!(deps_file, "\n{dep}:")?;
+            for dep in res.deps {
+                writeln!(deps_file, "\n{dep}:")?;
+            }
+        } else {
+            let _ = fs::remove_file(&deps_file);
         }
     }
 
