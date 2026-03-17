@@ -505,8 +505,8 @@ fn main() -> Result<()> {
         )?;
     }
 
+    let deps_file = out_file.with_extension("asmproc.d");
     if !res.deps.is_empty() && !args.no_dep_file {
-        let deps_file = out_file.with_extension("asmproc.d");
         let mut deps_file = File::create(&deps_file)?;
 
         writeln!(
@@ -519,6 +519,8 @@ fn main() -> Result<()> {
         for dep in res.deps {
             writeln!(deps_file, "\n{dep}:")?;
         }
+    } else {
+        let _ = fs::remove_file(&deps_file);
     }
 
     Ok(())
