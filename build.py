@@ -133,13 +133,14 @@ with tempfile.TemporaryDirectory(prefix="asm_processor") as tmpdirname:
     )
 
     deps_file = out_file.with_suffix(".asmproc.d")
-    if deps and "--no-dep-file" not in asmproc_flags:
-        with deps_file.open("w") as f:
-            f.write(str(out_file) + ": " + " \\\n    ".join(deps) + "\n")
-            for dep in deps:
-                f.write("\n" + dep + ":\n")
-    elif "--no-dep-file" not in asmproc_flags:
-        try:
-            deps_file.unlink()
-        except OSError:
-            pass
+    if "--no-dep-file" not in asmproc_flags:
+        if deps:
+            with deps_file.open("w") as f:
+                f.write(str(out_file) + ": " + " \\\n    ".join(deps) + "\n")
+                for dep in deps:
+                    f.write("\n" + dep + ":\n")
+        else:
+            try:
+                deps_file.unlink()
+            except OSError:
+                pass
