@@ -403,11 +403,11 @@ impl Section {
         relocate(hdrr.crfd, &mut hdrr.cb_rfd_offset);
         relocate(hdrr.iext_max, &mut hdrr.cb_ext_offset);
 
-        let mut new_data = [0; Hdrr::SIZE];
+        let mut new_data = self.data.clone();
         let mut cursor = Cursor::new(new_data.as_mut_slice());
         hdrr.write_options(&mut cursor, endian, ()).unwrap();
 
-        self.data = new_data.to_vec();
+        self.data = new_data;
     }
 }
 
