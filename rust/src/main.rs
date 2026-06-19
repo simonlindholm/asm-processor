@@ -182,6 +182,10 @@ struct AsmProcArgs {
     )]
     output_enc: Encoding,
 
+    /// Treat GLOBAL_ASM paths as relative to this base directory
+    #[argp(option, default = "PathBuf::new()", arg_name = "DIR")]
+    base_dir: PathBuf,
+
     /// Drop mdebug and gptab sections
     #[argp(switch)]
     drop_mdebug_gptab: bool,

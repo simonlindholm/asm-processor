@@ -26,7 +26,7 @@ while i < len(all_args):
         break
     i += 1
     asmproc_flags.append(arg)
-    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed") and i < len(all_args):
+    if arg in ("--input-enc", "--output-enc", "--asm-prelude", "--convert-statics", "--keep-preprocessed", "--base-dir") and i < len(all_args):
         asmproc_flags.append(all_args[i])
         i += 1
 

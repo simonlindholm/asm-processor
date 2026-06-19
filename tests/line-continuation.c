@@ -1,3 +1,4 @@
+// ASMP-FLAGS: --base-dir tests/inc/
 void foo(void) { "abcdef"; }
 
 GLOBAL_ASM(
@@ -19,4 +20,4 @@ GLOBAL_ASM(
 
 void baz(void) { "ghijkl"; }
 
-GLOBAL_ASM("tests/line-continuation-separate-file.s")
+GLOBAL_ASM("line-continuation-separate-file.s")

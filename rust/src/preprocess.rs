@@ -880,7 +880,8 @@ pub(crate) fn parse_source(
                 gasm.process_line(line2.trim_end(), output_enc)?;
             }
 
-            if !Path::new(&fname).exists() {
+            let path = args.base_dir.join(&fname);
+            if !Path::new(&path).exists() {
                 // The GLOBAL_ASM block might be surrounded by an ifdef, so it's
                 // not clear whether a missing file actually represents a compile
                 // error. Pass the responsibility for determining that on to the
@@ -891,7 +892,7 @@ pub(crate) fn parse_source(
                 continue;
             }
 
-            let file_contents = fs::read(&fname)?;
+            let file_contents = fs::read(&path)?;
             for line2 in input_enc.decode(&file_contents)?.lines() {
                 gasm.process_line(line2.trim_end(), output_enc)?;
             }
