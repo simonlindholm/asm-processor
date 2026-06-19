@@ -238,10 +238,6 @@ struct Hdrr {
     cb_ext_offset: u32,
 }
 
-impl Hdrr {
-    const SIZE: usize = 96;
-}
-
 #[binrw]
 #[derive(Clone)]
 struct SectionHeader {
