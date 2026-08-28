@@ -900,7 +900,7 @@ float_regexpr = re.compile(r"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?f")
 def repl_float_hex(m):
     return str(struct.unpack(">I", struct.pack(">f", float(m.group(0).strip().rstrip("f"))))[0])
 
-Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc', 'base_dir', 'encode_cutscene_data_floats'])
+Opts = namedtuple('Opts', ['opt', 'framepointer', 'mips1', 'kpic', 'pascal', 'input_enc', 'output_enc', 'base_dir', 'encode_cutscene_data_floats', 'force_file_directive'])
 
 def parse_source(f, opts, out_dependencies, print_source=None):
     if opts.opt in ['O1', 'O2']:
@@ -953,9 +953,12 @@ def parse_source(f, opts, out_dependencies, print_source=None):
     global_asm = None
     asm_functions = []
     base_fname = f.name
-    output_lines = [
-        '#line 1 "' + base_fname + '"'
-    ]
+
+    output_lines = []
+    if opts.force_file_directive:
+        output_lines.append('#line 1 "' + opts.force_file_directive + '"')
+    else:
+        output_lines.append('#line 1 "' + base_fname + '"')
 
     is_cutscene_data = False
     is_early_include = False
@@ -1499,6 +1502,7 @@ def run_wrapped(argv, outfile, functions):
     dir_path = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description="Pre-process .c files and post-process .o files to enable embedding assembly into C.")
     parser.add_argument('filename', help="path to .c code")
+    parser.add_argument('--force-file-directive', dest='force_file_directive', help="force the file directive for the processed file")
     parser.add_argument('--post-process', dest='objfile', help="path to .o file to post-process")
     parser.add_argument('--assembler', dest='assembler', help="assembler command (e.g. \"mips-linux-gnu-as -march=vr4300 -mabi=32\")")
     parser.add_argument('--asm-prelude', dest='asm_prelude', type=Path, default=dir_path / "prelude.inc", help="path to a file containing a prelude to the assembly file (with .set and .macro directives, e.g.)")
@@ -1532,7 +1536,7 @@ def run_wrapped(argv, outfile, functions):
     if pascal and opt not in ('O1', 'O2', 'g3'):
         raise Failure("Pascal is only supported together with -O1, -O2 or -O2 -g3")
     output_enc = Encoding(args.output_enc)
-    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, output_enc, args.base_dir, args.encode_cutscene_data_floats)
+    opts = Opts(opt, args.framepointer, args.mips1, args.kpic, pascal, args.input_enc, output_enc, args.base_dir, args.encode_cutscene_data_floats, args.force_file_directive)
 
     if args.objfile is None:
         with open(args.filename, encoding=args.input_enc) as f:

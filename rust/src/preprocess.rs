@@ -807,7 +807,13 @@ pub(crate) fn parse_source(
     let output_enc = &args.output_enc;
     let mut global_asm: Option<(GlobalAsmBlock, usize)> = None;
     let mut asm_functions: Vec<Function> = vec![];
-    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\"", infile_path.display())];
+    let file_directive = if let Some(path) = &args.force_file_directive {
+        path.clone()
+    } else {
+        infile_path.display().to_string()
+    };
+
+    let mut output_lines: Vec<String> = vec![format!("#line 1 \"{}\"", file_directive)];
     let mut deps: Vec<String> = vec![];
 
     let mut is_cutscene_data = false;

@@ -164,6 +164,10 @@ struct AsmProcArgs {
     #[argp(option, arg_name = "FILE")]
     asm_prelude: Option<PathBuf>,
 
+    /// Force the file directive for the processed file
+    #[argp(option, arg_name = "FILE")]
+    force_file_directive: Option<String>,
+
     /// Input encoding (default: latin1)
     #[argp(
         option,
